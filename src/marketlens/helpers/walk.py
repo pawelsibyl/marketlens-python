@@ -123,13 +123,14 @@ class MarketSlot:
         if prev_close is None or curr_open is None:
             return None
         overlap = prev_close - curr_open
-        return overlap if overlap > 0 else None
+        return overlap if overlap >= 0 else None
 
     @property
     def gap_from_prev(self) -> int | None:
         """Milliseconds of gap after the previous market closed, or ``None``.
 
-        Positive means there was dead time between the two markets.
+        Zero means the markets are perfectly contiguous. Positive means there
+        was dead time between the two markets.
         """
         if self.prev_market is None:
             return None
@@ -138,7 +139,7 @@ class MarketSlot:
         if prev_close is None or curr_open is None:
             return None
         gap = curr_open - prev_close
-        return gap if gap > 0 else None
+        return gap if gap >= 0 else None
 
     def __repr__(self) -> str:
         return f"MarketSlot(index={self.index}, market_id={self.market.id!r})"
@@ -220,7 +221,7 @@ class AsyncMarketSlot:
         if prev_close is None or curr_open is None:
             return None
         overlap = prev_close - curr_open
-        return overlap if overlap > 0 else None
+        return overlap if overlap >= 0 else None
 
     @property
     def gap_from_prev(self) -> int | None:
@@ -231,7 +232,7 @@ class AsyncMarketSlot:
         if prev_close is None or curr_open is None:
             return None
         gap = curr_open - prev_close
-        return gap if gap > 0 else None
+        return gap if gap >= 0 else None
 
     def __repr__(self) -> str:
         return f"AsyncMarketSlot(index={self.index}, market_id={self.market.id!r})"

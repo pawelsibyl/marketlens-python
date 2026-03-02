@@ -1,45 +1,27 @@
-"""Spread and slippage distributions for a $100 BUY across btc-up-or-down-5m.
-
-Samples each resolved market's book at the temporal midpoint and collects
-spread_bps, slippage_bps, and entry price.
-"""
+"""Analyze execution costs across order sizes on a live order book."""
 
 from marketlens import MarketLens
 
-SERIES = "btc-up-or-down-5m"
-ORDER_SIZE = "100"
 client = MarketLens()
+market = client.markets.list(status="active", sort="-liquidity", limit=1).first_page()[0]
+book = client.orderbook.get(market.id)
 
-spreads: list[float] = []
-slippages: list[float] = []
-entries: list[float] = []
+print(f"{market.question}")
+print(f"  {book.bid_levels} bids ({book.bid_depth} USD)  {book.ask_levels} asks ({book.ask_depth} USD)")
+print(f"  spread: {book.spread} ({book.spread_bps():.0f} bps)  midpoint: {book.midpoint}")
+print(f"  microprice: {book.microprice()}  weighted mid: {book.weighted_midpoint(n=3)}")
+print(f"  imbalance: {book.imbalance():.3f} (full book)  {book.imbalance(levels=3):.3f} (top 3)")
 
-for slot in client.series.walk(SERIES, status="resolved"):
-    m = slot.market
-    if m.open_time is None or m.close_time is None:
-        continue
+bid_near, ask_near = book.depth_within("0.02")
+print(f"  depth within 2c of mid: {bid_near} bid / {ask_near} ask")
 
-    book = slot.orderbook(at=(m.open_time + m.close_time) // 2)
-    sbps = book.spread_bps()
-    slip = book.slippage("BUY", ORDER_SIZE)
-    avg = book.impact("BUY", ORDER_SIZE)
-    if sbps is None or slip is None or avg is None or book.midpoint is None:
-        continue
-
-    spreads.append(sbps)
-    slippages.append(float(slip) / float(book.midpoint) * 10_000)
-    entries.append(float(avg))
-
-spreads.sort()
-slippages.sort()
-entries.sort()
-n = len(spreads)
-
-def pct(lst: list[float], p: float) -> float:
-    return lst[min(int(len(lst) * p), len(lst) - 1)]
-
-print(f"${ORDER_SIZE} BUY across {n} markets")
-print(f"  spread   — median {pct(spreads, .5):.0f}  p95 {pct(spreads, .95):.0f}  max {spreads[-1]:.0f} bps")
-print(f"  slippage — median {pct(slippages, .5):.1f}  p95 {pct(slippages, .95):.1f}  max {slippages[-1]:.1f} bps")
-print(f"  entry    — [{entries[0]:.4f}, {pct(entries, .5):.4f}, {entries[-1]:.4f}]")
+print(f"  {'size':>8}  {'avg fill':>10}  {'slippage':>10}  {'impact bps':>10}")
+for size in ["100", "1000", "5000", "25000"]:
+    avg = book.impact("BUY", size)
+    slip = book.slippage("BUY", size)
+    if avg and slip and book.midpoint:
+        bps = float(slip) / float(book.midpoint) * 10_000
+        print(f"  ${size:>7}  {avg:>10}  {slip:>10}  {bps:>9.1f}")
+    else:
+        print(f"  ${size:>7}  insufficient liquidity")
 client.close()

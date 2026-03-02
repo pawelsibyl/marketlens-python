@@ -77,6 +77,23 @@ class TestSeriesWalk:
         slots = list(client.series.walk("btc-daily"))
         assert slots[1].gap_from_prev == 3000  # m1 closes 2000, m2 opens 5000
 
+    def test_slot_contiguous_markets(self, mock_api, client):
+        """Contiguous markets (close == next open) should report 0 gap and 0 overlap."""
+        _mock_series_resolve(mock_api)
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 2000})
+        m2 = _market_with({"id": "m2", "open_time": 2000, "close_time": 3000})
+
+        mock_api.get("/series/btc-daily/markets").mock(
+            return_value=httpx.Response(200, json={
+                "data": [m1, m2],
+                "meta": {"cursor": None, "has_more": False},
+            })
+        )
+
+        slots = list(client.series.walk("btc-daily"))
+        assert slots[1].overlap_with_prev == 0
+        assert slots[1].gap_from_prev == 0
+
     def test_slot_candles(self, mock_api, client):
         """Slot.candles() should load candles for the market."""
         _mock_series_resolve(mock_api)

@@ -38,7 +38,9 @@ class SeriesResource:
         resolved = self._resolve(series_id).id
         return SyncPageIterator(self._client, f"/series/{resolved}/markets", params, Market)
 
-    def walk(self, series_id: str, **params: Any) -> Iterator:
+    def walk(
+        self, series_id: str, *, after: Any = None, before: Any = None, **params: Any,
+    ) -> Iterator:
         """Iterate markets in a series chronologically, yielding :class:`MarketSlot` objects.
 
         Each slot has lazy loaders for the market's candles, trades, and
@@ -56,14 +58,28 @@ class SeriesResource:
 
         Args:
             series_id: Series identifier.
-            **params: Filter params passed to the markets endpoint
-                (e.g. ``status``, ``platform``).
+            after: Only include markets closing at or after this time
+                (epoch ms or ``datetime``).
+            before: Only include markets closing at or before this time
+                (epoch ms or ``datetime``).
+            **params: Extra filter params (e.g. ``status``, ``platform``).
         """
         from marketlens.helpers.walk import MarketSlot
 
-        # Force chronological order
+        resolved = self._resolve(series_id)
         params["sort"] = "close_time"
-        markets = self.markets(series_id, **params).to_list()
+
+        if after is not None or before is not None:
+            params["series_id"] = resolved.id
+            if after is not None:
+                params["close_after"] = after
+            if before is not None:
+                params["close_before"] = before
+            markets = SyncPageIterator(self._client, "/markets", params, Market).to_list()
+        else:
+            markets = SyncPageIterator(
+                self._client, f"/series/{resolved.id}/markets", params, Market,
+            ).to_list()
 
         for i, market in enumerate(markets):
             prev_market = markets[i - 1] if i > 0 else None
@@ -99,7 +115,9 @@ class AsyncSeriesResource:
         resolved = (await self._resolve(series_id)).id
         return AsyncPageIterator(self._client, f"/series/{resolved}/markets", params, Market)
 
-    async def walk(self, series_id: str, **params: Any):
+    async def walk(
+        self, series_id: str, *, after: Any = None, before: Any = None, **params: Any,
+    ):
         """Async version of :meth:`SeriesResource.walk`.
 
         Usage::
@@ -109,8 +127,22 @@ class AsyncSeriesResource:
         """
         from marketlens.helpers.walk import AsyncMarketSlot
 
+        resolved = await self._resolve(series_id)
         params["sort"] = "close_time"
-        markets = await (await self.markets(series_id, **params)).to_list()
+
+        if after is not None or before is not None:
+            params["series_id"] = resolved.id
+            if after is not None:
+                params["close_after"] = after
+            if before is not None:
+                params["close_before"] = before
+            markets = await AsyncPageIterator(
+                self._client, "/markets", params, Market,
+            ).to_list()
+        else:
+            markets = await AsyncPageIterator(
+                self._client, f"/series/{resolved.id}/markets", params, Market,
+            ).to_list()
 
         for i, market in enumerate(markets):
             prev_market = markets[i - 1] if i > 0 else None

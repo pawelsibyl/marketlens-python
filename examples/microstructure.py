@@ -1,38 +1,27 @@
-"""Does top-of-book imbalance predict direction in btc-up-or-down-5m?
+"""Replay a single market's full L2 book and extract microstructure signals."""
 
-Replays the first 100 resolved markets. For each, computes mean top-3
-imbalance across all L2 updates, then checks if sign matches outcome.
-"""
+from datetime import datetime, timezone
 
 from marketlens import MarketLens, OrderBookReplay
 
-SERIES = "btc-up-or-down-5m"
-N_MARKETS = 100
 client = MarketLens()
 
-correct = 0
-total = 0
+# Grab one recently resolved BTC 5-min market
+slot = next(client.series.walk(
+    "btc-up-or-down-5m", status="resolved", after=datetime(2026, 3, 2, tzinfo=timezone.utc),
+))
 
-for slot in client.series.walk(SERIES, status="resolved"):
-    if total >= N_MARKETS:
-        break
+df = OrderBookReplay(slot.history(include_trades=True), market_id=slot.market.id).to_dataframe()
 
-    m = slot.market
-    if m.winning_outcome is None:
-        continue
+trades = df[df["event_type"] == "trade"]
+books = df[df["event_type"] != "trade"].dropna(subset=["midpoint"])
 
-    imbalances = [
-        imb
-        for _, book in OrderBookReplay(slot.history(), market_id=m.id)
-        if (imb := book.imbalance(levels=3)) is not None
-    ]
-    if not imbalances:
-        continue
-
-    mean_imb = sum(imbalances) / len(imbalances)
-    predicted = "Up" if mean_imb > 0 else "Down"
-    total += 1
-    correct += predicted == m.winning_outcome
-
-print(f"Top-3 imbalance signal — {correct}/{total} correct ({correct / total * 100:.1f}%, baseline 50%)")
+print(f"{slot.market.question}  ->  {slot.market.winning_outcome}")
+print(f"  {len(books):,} book updates, {len(trades):,} trades over {(df.index[-1] - df.index[0]).total_seconds():.0f}s")
+print(f"  midpoint drift:  {books['midpoint'].iloc[0]:.4f} -> {books['midpoint'].iloc[-1]:.4f}")
+print(f"  microprice mean: {books['weighted_midpoint'].mean():.4f}  (vs midpoint {books['midpoint'].mean():.4f})")
+print(f"  imbalance:       mean={books['imbalance'].mean():+.3f}  std={books['imbalance'].std():.3f}")
+print(f"  spread:          mean={books['spread'].mean():.4f}  ({books['spread_bps'].mean():.0f} bps)")
+if not trades.empty:
+    print(f"  trades:          {trades['trade_size'].sum():,.0f} USD  avg size {trades['trade_size'].mean():.1f}")
 client.close()
