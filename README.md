@@ -113,19 +113,6 @@ async with AsyncMarketLens() as client:
 | [`execution_cost.py`](examples/execution_cost.py) | Live book analytics — depth, spread, impact/slippage table across order sizes |
 | [`series_backtest.py`](examples/series_backtest.py) | Momentum backtest over a rolling series with per-trade P&L |
 
-## Error Handling
-
-```python
-from marketlens import NotFoundError, RateLimitError
-
-try:
-    client.markets.get("nonexistent")
-except NotFoundError as e:
-    print(e.code, e.message)
-except RateLimitError as e:
-    print(f"Retry after {e.retry_after}s")
-```
-
 ## License
 
 MIT
