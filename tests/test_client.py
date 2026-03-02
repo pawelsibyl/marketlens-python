@@ -111,6 +111,9 @@ class TestSeries:
         assert s.is_rolling is True
 
     def test_series_markets(self, mock_api, client):
+        mock_api.get("/series/btc-daily").mock(
+            return_value=httpx.Response(200, json=SAMPLE_SERIES)
+        )
         mock_api.get("/series/btc-daily/markets").mock(
             return_value=httpx.Response(200, json={
                 "data": [SAMPLE_MARKET],

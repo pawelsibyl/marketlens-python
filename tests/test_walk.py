@@ -1,6 +1,6 @@
 import httpx
 
-from conftest import BASE_URL, SAMPLE_MARKET, SAMPLE_CANDLE, SAMPLE_ORDERBOOK
+from conftest import BASE_URL, SAMPLE_MARKET, SAMPLE_CANDLE, SAMPLE_ORDERBOOK, SAMPLE_SERIES
 from marketlens.helpers.walk import MarketSlot
 
 
@@ -8,9 +8,17 @@ def _market_with(overrides):
     return {**SAMPLE_MARKET, **overrides}
 
 
+def _mock_series_resolve(mock_api):
+    """Mock the /series/btc-daily GET used by _resolve()."""
+    mock_api.get("/series/btc-daily").mock(
+        return_value=httpx.Response(200, json=SAMPLE_SERIES)
+    )
+
+
 class TestSeriesWalk:
     def test_walk_yields_slots_in_order(self, mock_api, client):
         """walk() should yield MarketSlot objects in chronological order."""
+        _mock_series_resolve(mock_api)
         m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 2000})
         m2 = _market_with({"id": "m2", "open_time": 1500, "close_time": 2500})
         m3 = _market_with({"id": "m3", "open_time": 2000, "close_time": 3000})
@@ -38,6 +46,7 @@ class TestSeriesWalk:
 
     def test_slot_overlap_with_prev(self, mock_api, client):
         """Detect overlapping markets in a rolling series."""
+        _mock_series_resolve(mock_api)
         m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
         m2 = _market_with({"id": "m2", "open_time": 4000, "close_time": 9000})
 
@@ -54,6 +63,7 @@ class TestSeriesWalk:
 
     def test_slot_gap_from_prev(self, mock_api, client):
         """Detect gaps between markets."""
+        _mock_series_resolve(mock_api)
         m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 2000})
         m2 = _market_with({"id": "m2", "open_time": 5000, "close_time": 6000})
 
@@ -69,6 +79,7 @@ class TestSeriesWalk:
 
     def test_slot_candles(self, mock_api, client):
         """Slot.candles() should load candles for the market."""
+        _mock_series_resolve(mock_api)
         m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
 
         mock_api.get("/series/btc-daily/markets").mock(
@@ -91,6 +102,7 @@ class TestSeriesWalk:
 
     def test_slot_orderbook(self, mock_api, client):
         """Slot.orderbook() should load the book for the market."""
+        _mock_series_resolve(mock_api)
         m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
 
         mock_api.get("/series/btc-daily/markets").mock(
@@ -109,6 +121,7 @@ class TestSeriesWalk:
 
     def test_walk_with_status_filter(self, mock_api, client):
         """Walk should pass filter params through."""
+        _mock_series_resolve(mock_api)
         m1 = _market_with({"id": "m1", "status": "resolved"})
 
         route = mock_api.get("/series/btc-daily/markets").mock(

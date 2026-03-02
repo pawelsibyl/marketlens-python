@@ -77,9 +77,13 @@ class MarketSlot:
     def orderbook(self, *, at: Any = None, depth: int | None = None) -> OrderBook:
         """Fetch the orderbook for this market.
 
-        When ``at`` is omitted, returns the latest available state.
+        When ``at`` is omitted on a resolved market, defaults to
+        ``close_time`` so you get the book while the market was still live
+        (post-resolution the book is empty).
         """
         params: dict[str, Any] = {}
+        if at is None and self.market.status == "resolved" and self.market.close_time is not None:
+            at = self.market.close_time
         if at is not None:
             params["at"] = at
         if depth is not None:
@@ -177,7 +181,14 @@ class AsyncMarketSlot:
         )
 
     async def orderbook(self, *, at: Any = None, depth: int | None = None) -> OrderBook:
+        """Fetch the orderbook for this market.
+
+        When ``at`` is omitted on a resolved market, defaults to
+        ``close_time`` so you get the book while the market was still live.
+        """
         params: dict[str, Any] = {}
+        if at is None and self.market.status == "resolved" and self.market.close_time is not None:
+            at = self.market.close_time
         if at is not None:
             params["at"] = at
         if depth is not None:
