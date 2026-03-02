@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "marketlens"
 version = "0.1.0"
-description = "Python SDK for the MarketLens prediction market data API"
+description = "Historical tick-by-tick L2 orderbook reconstruction and backtesting primitives for Polymarket. Spread, impact, imbalance, and every trade, delivered as a DataFrame."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
