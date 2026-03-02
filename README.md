@@ -1,118 +1,119 @@
 # MarketLens Python SDK
 
-Python client for the [MarketLens](https://marketlens.com) prediction market data API. Covers all data query endpoints with sync/async clients, auto-pagination, and orderbook reconstruction helpers.
-
-## Install
+Historical and real-time prediction market data — full L2 orderbook reconstruction, microstructure analytics, and backtesting primitives for Polymarket.
 
 ```bash
 pip install marketlens
 ```
 
-## Quick Start
-
 ```python
 from marketlens import MarketLens
 
 client = MarketLens(api_key="mk_...")  # or set MARKETLENS_API_KEY env var
-
-# List markets
-for market in client.markets.list(status="active", limit=10):
-    print(market.question, market.volume)
-
-# Get orderbook
-book = client.orderbook.get(market_id)
-print(book.best_bid, book.best_ask, book.spread)
-
-# Price impact
-avg_price = book.impact("BUY", "500.00")
-
-# Candles as DataFrame
-df = client.markets.candles(market_id, resolution="1h").to_dataframe()
 ```
 
-## Examples
+## L2 Orderbook Replay
 
-Backtesting-oriented examples against the real `btc-up-or-down-5m` series (770+ resolved markets):
-
-| Example | Question it answers |
-|---------|---------------------|
-| [`microstructure.py`](examples/microstructure.py) | What does the book look like tick-by-tick? Does imbalance predict direction? |
-| [`execution_cost.py`](examples/execution_cost.py) | What does it cost to trade these markets? (spread/slippage distributions) |
-| [`series_backtest.py`](examples/series_backtest.py) | Does prior market momentum predict the next market's direction? |
-
-## Async
+Reconstruct tick-by-tick book state from the raw snapshot + delta stream. Every event yields a full `OrderBook` with computed spread, midpoint, depth, and imbalance — ready for microstructure research.
 
 ```python
-from marketlens import AsyncMarketLens
+from marketlens import MarketLens, OrderBookReplay
 
-async with AsyncMarketLens() as client:
-    market = await client.markets.get(market_id)
-    async for trade in client.markets.trades(market_id, after=start, before=end):
-        print(trade.price, trade.size)
+history = client.orderbook.history(market_id, after=start, before=end, include_trades=True)
+replay = OrderBookReplay(history, market_id=market_id)
+
+# Iterate event-by-event with full book state
+for event, book in replay:
+    print(f"t={event.t}  mid={book.midpoint}  spread={book.spread_bps():.0f}bps  imb={book.imbalance():.3f}")
+
+# Or get everything as a DataFrame in one call
+df = replay.to_dataframe()
+# Columns: midpoint, spread, spread_bps, imbalance, weighted_midpoint,
+#          bid_depth, ask_depth, bid_levels, ask_levels,
+#          trade_price, trade_size, trade_side (on trade rows)
+```
+
+## OrderBook Analytics
+
+Every `OrderBook` object — whether from a live snapshot or replayed from history — carries the same set of analytical methods:
+
+```python
+book = client.orderbook.get(market_id)
+
+book.microprice()              # size-weighted mid from best level
+book.weighted_midpoint(n=3)    # n-level weighted mid
+book.spread_bps()              # spread in basis points
+book.imbalance()               # full-book bid/ask imbalance [-1, 1]
+book.imbalance(levels=3)       # top-of-book imbalance (better short-term signal)
+book.impact("BUY", "1000")     # VWAP execution price for $1k market buy
+book.slippage("BUY", "1000")   # slippage from mid for $1k order
+book.depth_within("0.02")      # (bid_depth, ask_depth) within 2c of mid
+```
+
+## Series Walk — Backtesting Primitive
+
+Walk through every market in a rolling series chronologically. Each `MarketSlot` has lazy loaders for candles, trades, orderbook, and full history — you only fetch what you use.
+
+```python
+from datetime import datetime, timezone
+
+for slot in client.series.walk("btc-up-or-down-5m", status="resolved",
+                                after=datetime(2026, 3, 2, 12, 0, tzinfo=timezone.utc),
+                                before=datetime(2026, 3, 2, 14, 0, tzinfo=timezone.utc)):
+    candles = slot.candles("1m").to_dataframe()     # OHLCV DataFrame
+    book = slot.orderbook()                          # book at close_time
+    replay_df = OrderBookReplay(                     # full L2 replay
+        slot.history(include_trades=True), market_id=slot.market.id,
+    ).to_dataframe()
+
+    print(slot.market.question, slot.market.winning_outcome)
+    print(f"  overlap={slot.overlap_with_prev}ms  gap={slot.gap_from_prev}ms")
 ```
 
 ## Resources
 
 | Namespace | Methods |
 |-----------|---------|
-| `client.markets` | `.list()`, `.get()`, `.trades()`, `.candles()` |
-| `client.events` | `.list()`, `.get()`, `.markets()` |
-| `client.series` | `.list()`, `.get()`, `.markets()`, `.walk()` |
-| `client.orderbook` | `.get()`, `.history()`, `.metrics()` |
+| `client.markets` | `list()` `get()` `trades()` `candles()` |
+| `client.events` | `list()` `get()` `markets()` |
+| `client.series` | `list()` `get()` `markets()` `walk()` |
+| `client.orderbook` | `get()` `history()` `metrics()` |
 
-All list methods return auto-paginating iterators. Call `.to_list()` to collect or `.to_dataframe()` for pandas.
-
-## Orderbook Replay
-
-Reconstruct full book state from the raw event stream:
+All list methods return auto-paginating iterators. Chain `.to_list()` to collect or `.to_dataframe()` for a typed pandas DataFrame (decimal strings → `float64`, epoch ms → `datetime64[ns, UTC]`).
 
 ```python
-from marketlens import MarketLens, OrderBookReplay
+# Candles as DataFrame
+df = client.markets.candles(market_id, resolution="1h").to_dataframe()
 
-client = MarketLens()
-history = client.orderbook.history(market_id, after=start, before=end, include_trades=True)
+# Trades with time filter
+trades = client.markets.trades(market_id, after=start, before=end).to_list()
 
-for event, book in OrderBookReplay(history, market_id=market_id):
-    print(f"t={event.t}  spread={book.spread}  mid={book.midpoint}")
+# Markets sorted by liquidity
+top = client.markets.list(status="active", sort="-liquidity", limit=5).first_page()
 ```
 
-## OrderBook Helpers
+## Async
+
+Full async support — every resource, iterator, and replay helper has an async counterpart.
 
 ```python
-book = client.orderbook.get(market_id)
+from marketlens import AsyncMarketLens, AsyncOrderBookReplay
 
-# Microprice (size-weighted mid from best levels)
-book.microprice()                   # alias for weighted_midpoint(1)
-
-# Spread in basis points
-book.spread_bps()                   # spread / midpoint * 10_000
-
-# Top-of-book imbalance (better short-term predictor than full-book)
-book.imbalance(levels=3)            # top-3 levels only
-book.imbalance()                    # full book (default)
-
-# Volume-weighted avg execution price for a $500 market buy
-book.impact("BUY", "500.00")
-
-# Liquidity within 5 cents of midpoint
-bid_depth, ask_depth = book.depth_within("0.05")
-
-# Slippage from mid for a $1000 order
-book.slippage("BUY", "1000.00")
+async with AsyncMarketLens() as client:
+    async for slot in client.series.walk("btc-up-or-down-5m", status="resolved"):
+        book = await slot.orderbook()
+        print(book.microprice(), book.imbalance(levels=3))
 ```
 
-## Timestamps
+## Examples
 
-All timestamp parameters accept both `int` (ms epoch) and `datetime`:
+| Example | What it does |
+|---------|-------------|
+| [`microstructure.py`](examples/microstructure.py) | Replays one market's full L2 book — midpoint drift, microprice, imbalance, spread, trade flow |
+| [`execution_cost.py`](examples/execution_cost.py) | Live book analytics — depth, spread, impact/slippage table across order sizes |
+| [`series_backtest.py`](examples/series_backtest.py) | Momentum backtest over a rolling series with per-trade P&L |
 
-```python
-from datetime import datetime, timezone
-
-client.markets.trades(market_id, after=datetime(2025, 1, 1, tzinfo=timezone.utc))
-client.markets.trades(market_id, after=1735689600000)  # same
-```
-
-## Exceptions
+## Error Handling
 
 ```python
 from marketlens import NotFoundError, RateLimitError
