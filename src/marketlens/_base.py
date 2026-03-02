@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -11,7 +11,6 @@ from marketlens._constants import DEFAULT_BASE_URL, DEFAULT_MAX_RETRIES, DEFAULT
 from marketlens.exceptions import (
     APIError,
     ConnectionError,
-    InvalidParameterError,
     RateLimitError,
     TimeoutError,
     _CODE_TO_EXCEPTION,
@@ -131,7 +130,6 @@ class SyncHTTPClient:
         # Should not reach here, but just in case
         if last_exc:
             raise last_exc
-        raise MarketLensError("Request failed after retries")  # noqa: F821
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         return self.request("GET", path, params=params or {})

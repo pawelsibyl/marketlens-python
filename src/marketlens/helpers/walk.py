@@ -13,7 +13,7 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Any, Iterator
+from typing import Any
 
 from marketlens._pagination import SyncPageIterator, AsyncPageIterator
 from marketlens.types.candle import Candle

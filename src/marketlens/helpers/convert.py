@@ -7,8 +7,8 @@ analysis-ready DataFrame from every ``to_dataframe()`` call.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Sequence
+from dataclasses import dataclass
+from typing import Sequence
 
 import pandas as pd
 from pydantic import BaseModel
@@ -35,7 +35,7 @@ def _get_registry() -> dict[type, _DFConfig]:
     from marketlens.types.candle import Candle
     from marketlens.types.event import Event
     from marketlens.types.market import Market
-    from marketlens.types.orderbook import BookMetrics, OrderBook
+    from marketlens.types.orderbook import BookMetrics
     from marketlens.types.series import Series
     from marketlens.types.trade import Trade
 
