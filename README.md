@@ -30,6 +30,16 @@ avg_price = book.impact("BUY", "500.00")
 df = client.markets.candles(market_id, resolution="1h").to_dataframe()
 ```
 
+## Examples
+
+Backtesting-oriented examples against the real `btc-up-or-down-5m` series (770+ resolved markets):
+
+| Example | Question it answers |
+|---------|---------------------|
+| [`microstructure.py`](examples/microstructure.py) | What does the book look like tick-by-tick? Does imbalance predict direction? |
+| [`execution_cost.py`](examples/execution_cost.py) | What does it cost to trade these markets? (spread/slippage distributions) |
+| [`series_backtest.py`](examples/series_backtest.py) | Does prior market momentum predict the next market's direction? |
+
 ## Async
 
 ```python
@@ -70,6 +80,16 @@ for event, book in OrderBookReplay(history, market_id=market_id):
 
 ```python
 book = client.orderbook.get(market_id)
+
+# Microprice (size-weighted mid from best levels)
+book.microprice()                   # alias for weighted_midpoint(1)
+
+# Spread in basis points
+book.spread_bps()                   # spread / midpoint * 10_000
+
+# Top-of-book imbalance (better short-term predictor than full-book)
+book.imbalance(levels=3)            # top-3 levels only
+book.imbalance()                    # full book (default)
 
 # Volume-weighted avg execution price for a $500 market buy
 book.impact("BUY", "500.00")

@@ -161,3 +161,36 @@ class TestOrderBookHelpers:
             bid_levels=0, ask_levels=1,
         )
         assert ob.weighted_midpoint() is None
+
+    def test_microprice(self):
+        ob = OrderBook.model_validate(SAMPLE_ORDERBOOK)
+        mp = ob.microprice()
+        wmid = ob.weighted_midpoint(1)
+        assert mp is not None
+        assert mp == wmid
+
+    def test_spread_bps(self):
+        ob = OrderBook.model_validate(SAMPLE_ORDERBOOK)
+        # spread=0.02, mid=0.66 → 0.02/0.66*10000 ≈ 303.03 bps
+        bps = ob.spread_bps()
+        assert bps is not None
+        assert abs(bps - 303.03) < 1.0
+
+    def test_spread_bps_no_spread(self):
+        ob = OrderBook(
+            market_id="x", platform="p", as_of=0,
+            bids=[], asks=[],
+            bid_levels=0, ask_levels=0,
+        )
+        assert ob.spread_bps() is None
+
+    def test_imbalance_with_levels(self):
+        ob = OrderBook.model_validate(SAMPLE_ORDERBOOK)
+        # Top-1: bid size 200, ask size 100 → (200-100)/(200+100) ≈ 0.333
+        imb = ob.imbalance(levels=1)
+        assert imb is not None
+        assert abs(imb - 0.3333) < 0.01
+
+    def test_imbalance_levels_none_is_total(self):
+        ob = OrderBook.model_validate(SAMPLE_ORDERBOOK)
+        assert ob.imbalance() == ob.imbalance(levels=None)

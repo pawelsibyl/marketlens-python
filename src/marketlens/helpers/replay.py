@@ -137,12 +137,15 @@ class OrderBookReplay:
         - ``bid_depth``, ``ask_depth`` — ``float64``
         - ``bid_levels``, ``ask_levels`` — ``int``
         - ``imbalance`` — ``float64`` (bid-ask imbalance in ``[-1, 1]``)
+        - ``weighted_midpoint`` — ``float64`` (top-of-book size-weighted mid)
+        - ``spread_bps`` — ``float64`` (spread in basis points)
 
         """
         import pandas as pd
 
         rows: list[dict] = []
         for event, book in self:
+            wmid = book.weighted_midpoint(1)
             row: dict = {
                 "t": event.t,
                 "event_type": event.type,
@@ -155,6 +158,8 @@ class OrderBookReplay:
                 "bid_levels": book.bid_levels,
                 "ask_levels": book.ask_levels,
                 "imbalance": book.imbalance(),
+                "weighted_midpoint": float(wmid) if wmid else None,
+                "spread_bps": book.spread_bps(),
             }
 
             # Add trade-specific columns when trades are present
@@ -233,6 +238,7 @@ class AsyncOrderBookReplay:
 
         rows: list[dict] = []
         async for event, book in self:
+            wmid = book.weighted_midpoint(1)
             row: dict = {
                 "t": event.t,
                 "event_type": event.type,
@@ -245,6 +251,8 @@ class AsyncOrderBookReplay:
                 "bid_levels": book.bid_levels,
                 "ask_levels": book.ask_levels,
                 "imbalance": book.imbalance(),
+                "weighted_midpoint": float(wmid) if wmid else None,
+                "spread_bps": book.spread_bps(),
             }
 
             if isinstance(event, TradeEvent):

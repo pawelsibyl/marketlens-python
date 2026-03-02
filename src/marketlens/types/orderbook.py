@@ -109,16 +109,55 @@ class OrderBook(BaseModel):
         diff = abs(Decimal(avg) - Decimal(self.midpoint))
         return str(diff.quantize(_FOUR))
 
-    def imbalance(self) -> float | None:
+    def microprice(self) -> str | None:
+        """Size-weighted midpoint from the top-of-book (alias for ``weighted_midpoint(1)``).
+
+        This is the canonical "microprice" from microstructure literature —
+        the best-level weighted mid that adjusts for queue imbalance.
+
+        Returns:
+            Microprice as a 4-decimal string, or ``None`` if either side
+            has no levels.
+        """
+        return self.weighted_midpoint(1)
+
+    def spread_bps(self) -> float | None:
+        """Spread expressed in basis points relative to midpoint.
+
+        ``spread / midpoint * 10_000``.
+
+        Returns:
+            Spread in bps as a float, or ``None`` if spread or midpoint
+            is unavailable.
+        """
+        if self.spread is None or self.midpoint is None:
+            return None
+        mid = Decimal(self.midpoint)
+        if mid == 0:
+            return None
+        return float(Decimal(self.spread) / mid * 10_000)
+
+    def imbalance(self, levels: int | None = None) -> float | None:
         """Order book imbalance: ``(bid_depth - ask_depth) / (bid_depth + ask_depth)``.
+
+        Args:
+            levels: Number of top levels to include from each side.
+                When ``None`` (default), uses the full book depth — preserving
+                the original behavior.
 
         Returns a float in ``[-1, 1]``, or ``None`` if the book is empty.
         A positive value indicates more resting liquidity on the bid side.
         """
-        if self.bid_depth is None or self.ask_depth is None:
-            return None
-        bd = Decimal(self.bid_depth)
-        ad = Decimal(self.ask_depth)
+        if levels is None:
+            if self.bid_depth is None or self.ask_depth is None:
+                return None
+            bd = Decimal(self.bid_depth)
+            ad = Decimal(self.ask_depth)
+        else:
+            top_bids = self.bids[:levels]
+            top_asks = self.asks[:levels]
+            bd = sum((Decimal(l.size) for l in top_bids), _ZERO)
+            ad = sum((Decimal(l.size) for l in top_asks), _ZERO)
         total = bd + ad
         if total == 0:
             return None

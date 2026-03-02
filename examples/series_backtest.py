@@ -1,44 +1,41 @@
-"""Walk a rolling series and backtest a simple spread-based strategy.
+"""Momentum backtest on btc-up-or-down-5m.
 
-Demonstrates the series.walk() pattern — the primary way to iterate
-through related markets for backtesting.
+Signal: if the previous market's last 1m candle closed > 0.50, buy "Up"
+on the next market at book impact() price. Binary P&L per trade.
 """
 
-from marketlens import MarketLens, OrderBookReplay
+from marketlens import MarketLens
 
+SERIES = "btc-up-or-down-5m"
+STAKE = 100.0
 client = MarketLens()
 
-series_id = "btc-up-or-down-daily"
+pnl = 0.0
+wins = 0
+trades = 0
+prev_close: float | None = None
 
-# Walk every resolved market in chronological order
-for slot in client.series.walk(series_id, status="resolved"):
+for slot in client.series.walk(SERIES, status="resolved"):
     m = slot.market
-    print(f"\n--- {m.question} ---")
-    print(f"  open={m.open_time}  close={m.close_time}  result={m.winning_outcome}")
-
-    if slot.overlap_with_prev:
-        print(f"  Overlap with prev: {slot.overlap_with_prev}ms")
-    if slot.gap_from_prev:
-        print(f"  Gap from prev: {slot.gap_from_prev}ms")
-
-    # Load 1-minute candles as a DataFrame — types are already float/datetime
-    df = slot.candles("1m").to_dataframe()
-    if df.empty:
+    if m.winning_outcome is None:
         continue
 
-    print(f"  Candles: {len(df)} rows")
-    print(f"  VWAP range: {df['vwap'].min():.4f} – {df['vwap'].max():.4f}")
-    print(f"  Volume: {df['volume'].sum():.2f}")
-
-    # Replay orderbook and get a book metrics DataFrame
-    history = slot.history(include_trades=True)
-    replay_df = OrderBookReplay(history, market_id=m.id).to_dataframe()
-    if replay_df.empty:
+    candles = slot.candles("1m").to_dataframe()
+    if candles.empty:
+        prev_close = None
         continue
+    last_close = float(candles["close"].iloc[-1])
 
-    avg_spread = replay_df["spread"].mean()
-    avg_imbalance = replay_df["imbalance"].mean()
-    print(f"  Avg spread: {avg_spread:.4f}")
-    print(f"  Avg imbalance: {avg_imbalance:+.4f}")
+    if prev_close is not None and prev_close > 0.50:
+        avg = slot.orderbook().impact("BUY", str(STAKE))
+        if avg is not None:
+            entry = float(avg)
+            payout = 1.0 if m.winning_outcome == "Up" else 0.0
+            pnl += (payout - entry) * STAKE
+            trades += 1
+            wins += payout == 1.0
 
+    prev_close = last_close
+
+print(f"{trades} trades  win {wins}/{trades} ({wins / trades * 100:.1f}%)  P&L ${pnl:+.2f}")
 client.close()

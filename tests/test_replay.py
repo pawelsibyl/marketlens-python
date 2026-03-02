@@ -152,3 +152,16 @@ class TestReplayToDataFrame:
     def test_to_dataframe_empty(self):
         df = OrderBookReplay([], market_id="m1").to_dataframe()
         assert len(df) == 0
+
+    def test_to_dataframe_has_microprice_columns(self):
+        events = [
+            _make_snapshot(1000, [("0.6500", "200.0000")], [("0.6700", "100.0000")]),
+            _make_delta(2000, "0.6500", "350.0000", "BUY"),
+        ]
+        df = OrderBookReplay(events, market_id="m1").to_dataframe()
+        assert "weighted_midpoint" in df.columns
+        assert "spread_bps" in df.columns
+        assert df["weighted_midpoint"].dtype == float
+        assert df["spread_bps"].dtype == float
+        assert df["weighted_midpoint"].notna().all()
+        assert df["spread_bps"].notna().all()
