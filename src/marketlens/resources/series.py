@@ -5,6 +5,7 @@ from typing import Any, Iterator
 from marketlens._base import AsyncHTTPClient, SyncHTTPClient
 from marketlens._pagination import AsyncPageIterator, SyncPageIterator
 from marketlens.exceptions import NotFoundError
+from marketlens.types.event import Event
 from marketlens.types.market import Market
 from marketlens.types.series import Series
 
@@ -60,6 +61,11 @@ class SeriesResource:
             **params: Extra filter params (e.g. ``status``, ``platform``).
         """
         resolved = self._resolve(series_id)
+        if not resolved.is_rolling:
+            raise ValueError(
+                f"series.walk() is only supported for rolling series. "
+                f"'{resolved.title}' is not rolling. Use series.events() to browse its events."
+            )
         params["sort"] = "close_time"
 
         if after is not None or before is not None:
@@ -75,6 +81,21 @@ class SeriesResource:
             ).to_list()
 
         yield from markets
+
+    def events(self, series_id: str, **params: Any) -> SyncPageIterator[Event]:
+        """List events belonging to a series.
+
+        Useful for non-rolling series where markets are grouped by event
+        (e.g. weekly strike groups). Returns events sorted by ``end_date``.
+
+        Args:
+            series_id: Series identifier or platform slug.
+            **params: Extra filter params.
+        """
+        resolved = self._resolve(series_id)
+        params.setdefault("sort", "end_date")
+        params["series_id"] = resolved.id
+        return SyncPageIterator(self._client, "/events", params, Event)
 
 
 class AsyncSeriesResource:
@@ -116,6 +137,11 @@ class AsyncSeriesResource:
                 print(market.question)
         """
         resolved = await self._resolve(series_id)
+        if not resolved.is_rolling:
+            raise ValueError(
+                f"series.walk() is only supported for rolling series. "
+                f"'{resolved.title}' is not rolling. Use series.events() to browse its events."
+            )
         params["sort"] = "close_time"
 
         if after is not None or before is not None:
@@ -134,3 +160,15 @@ class AsyncSeriesResource:
 
         for market in markets:
             yield market
+
+    async def events(self, series_id: str, **params: Any) -> AsyncPageIterator[Event]:
+        """List events belonging to a series (async).
+
+        Args:
+            series_id: Series identifier or platform slug.
+            **params: Extra filter params.
+        """
+        resolved = await self._resolve(series_id)
+        params.setdefault("sort", "end_date")
+        params["series_id"] = resolved.id
+        return AsyncPageIterator(self._client, "/events", params, Event)

@@ -13,7 +13,6 @@ from marketlens.exceptions import (
     RateLimitError,
     TimeoutError,
 )
-from marketlens.helpers.replay import AsyncOrderBookReplay, OrderBookReplay
 from marketlens.helpers.walk import AsyncOrderBookWalk, OrderBookWalk
 from marketlens.types import (
     BookMetrics,
@@ -59,8 +58,6 @@ __all__ = [
     "Platform",
     "Resolution",
     # Helpers
-    "OrderBookReplay",
-    "AsyncOrderBookReplay",
     "OrderBookWalk",
     "AsyncOrderBookWalk",
     # Exceptions

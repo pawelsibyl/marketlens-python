@@ -105,6 +105,19 @@ SAMPLE_SERIES = {
     "last_market_close": 1709000000000,
 }
 
+SAMPLE_SERIES_NONROLLING = {
+    "id": "btc-hit-price",
+    "platform": "polymarket",
+    "platform_series_id": "bitcoin-hit-price-weekly",
+    "title": "Bitcoin Hit Price Weekly",
+    "recurrence": "weekly",
+    "category": "Crypto",
+    "is_rolling": False,
+    "market_count": 52,
+    "first_market_close": 1640000000000,
+    "last_market_close": 1709000000000,
+}
+
 SAMPLE_ORDERBOOK = {
     "market_id": "abc-123",
     "platform": "polymarket",

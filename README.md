@@ -12,9 +12,9 @@ from marketlens import MarketLens
 client = MarketLens(api_key="mk_...")  # or set MARKETLENS_API_KEY env var
 ```
 
-## Orderbook Walk — Series Backtesting
+## Order Book Replay
 
-Replay full L2 book state across every market in a rolling series. Each tick yields `(Market, OrderBook)` — one line to go from series slug to book-level backtest.
+Replay full L2 book state for any market. Each tick yields `(Market, OrderBook)` — one line to go from market ID to book-level analysis.
 
 ```python
 from datetime import datetime, timezone
@@ -22,6 +22,20 @@ from marketlens import MarketLens
 
 client = MarketLens()
 
+for market, book in client.orderbook.walk(market_id, after=start, before=end):
+    print(f"mid={book.midpoint}  spread={book.spread_bps():.0f}bps")
+
+# Or as a DataFrame
+df = client.orderbook.walk(market_id, after=start, before=end).to_dataframe()
+# Columns: midpoint, spread, spread_bps, imbalance, weighted_midpoint,
+#          bid_depth, ask_depth, market_id, winning_outcome
+```
+
+## Series Backtesting
+
+Walk every market in a rolling series chronologically — same `orderbook.walk()` interface, just pass a series slug instead of a market ID.
+
+```python
 for market, book in client.orderbook.walk(
     "btc-up-or-down-5m", status="resolved",
     after=datetime(2026, 3, 5, 8, 40, tzinfo=timezone.utc),
@@ -32,31 +46,14 @@ for market, book in client.orderbook.walk(
         # ...
 ```
 
-Or get everything as a DataFrame:
+## Browse Series Events
+
+Non-rolling series (e.g. weekly strike groups) are browsed by event:
 
 ```python
-df = client.orderbook.walk(
-    "btc-up-or-down-5m", status="resolved",
-    after=start, before=end,
-).to_dataframe()
-# Columns: midpoint, spread, spread_bps, imbalance, weighted_midpoint,
-#          bid_depth, ask_depth, market_id, winning_outcome
-```
-
-## L2 Orderbook Replay
-
-Reconstruct tick-by-tick book state from the raw snapshot + delta stream for a single market.
-
-```python
-from marketlens import OrderBookReplay
-
-history = client.orderbook.history(market_id, after=start, before=end)
-
-for event, book in OrderBookReplay(history, market_id=market_id):
-    print(f"t={event.t}  mid={book.midpoint}  spread={book.spread_bps():.0f}bps")
-
-# Or as a DataFrame
-df = OrderBookReplay(history, market_id=market_id).to_dataframe()
+for event in client.series.events("bitcoin-hit-price-weekly"):
+    markets = client.events.markets(event.id).to_list()
+    print(f"{event.title} — {len(markets)} strikes")
 ```
 
 ## OrderBook Analytics
@@ -82,7 +79,7 @@ book.depth_within("0.02")      # (bid_depth, ask_depth) within 2c of mid
 |-----------|---------|
 | `client.markets` | `list()` `get()` `trades()` `candles()` |
 | `client.events` | `list()` `get()` `markets()` |
-| `client.series` | `list()` `get()` `markets()` `walk()` |
+| `client.series` | `list()` `get()` `markets()` `walk()` `events()` |
 | `client.orderbook` | `get()` `history()` `metrics()` `walk()` |
 
 All list methods return auto-paginating iterators with `.to_list()` and `.to_dataframe()`.
@@ -101,7 +98,7 @@ Every resource, iterator, and replay helper has an async counterpart.
 from marketlens import AsyncMarketLens
 
 async with AsyncMarketLens() as client:
-    async for market, book in client.orderbook.walk("btc-up-or-down-5m", status="resolved"):
+    async for market, book in await client.orderbook.walk(market_id, after=start, before=end):
         print(book.microprice(), book.imbalance(levels=3))
 ```
 
@@ -109,8 +106,10 @@ async with AsyncMarketLens() as client:
 
 | Example | Description |
 |---------|-------------|
+| [`single_market_replay.py`](examples/single_market_replay.py) | Replay a single market's order book tick by tick |
 | [`microstructure.py`](examples/microstructure.py) | Feature matrix from L2 replay — imbalance vs outcome signal |
-| [`series_backtest.py`](examples/series_backtest.py) | Spread-timing strategy with per-trade P&L |
+| [`series_backtest.py`](examples/series_backtest.py) | Spread-timing strategy with per-trade P&L across a rolling series |
+| [`event_strikes.py`](examples/event_strikes.py) | Browse strike-level markets in a non-rolling series |
 | [`execution_cost.py`](examples/execution_cost.py) | Live book depth, spread, impact/slippage across order sizes |
 
 ## License

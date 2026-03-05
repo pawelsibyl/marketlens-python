@@ -1,13 +1,18 @@
-"""Order book walk — replay L2 books across every market in a series.
+"""Order book walk — replay L2 books for a single market or across a series.
 
-One-liner order book replay optimised for backtesting::
+Single-market replay::
 
-    for market, book in client.orderbook.walk(
-        "btc-up-or-down-5m", status="resolved",
-        after=datetime(2026, 3, 5, 8, 40, tzinfo=timezone.utc),
-        before=datetime(2026, 3, 5, 8, 45, tzinfo=timezone.utc),
-    ):
-        ...
+    for market, book in client.orderbook.walk(market_id, after=start, before=end):
+        print(book.midpoint, book.spread_bps())
+
+Rolling series replay::
+
+    for market, book in client.orderbook.walk("btc-up-or-down-5m", status="resolved"):
+        print(market.question, book.imbalance())
+
+Both support ``.to_dataframe()``::
+
+    df = client.orderbook.walk(market_id, after=start, before=end).to_dataframe()
 """
 
 from __future__ import annotations
@@ -26,18 +31,19 @@ from marketlens.types.orderbook import OrderBook
 
 
 class OrderBookWalk:
-    """Iterate ``(Market, OrderBook)`` tuples across a series of markets.
+    """Iterate ``(Market, OrderBook)`` tuples for one or more markets.
 
     For each market, fetches L2 history and replays it tick-by-tick.
     Trade events are skipped (they don't change book state).
 
     Usage::
 
-        walk = client.orderbook.walk(
-            "btc-up-or-down-5m", status="resolved",
-            after=datetime(2026, 3, 5, 8, 40, tzinfo=timezone.utc),
-            before=datetime(2026, 3, 5, 8, 45, tzinfo=timezone.utc),
-        )
+        # Single market
+        walk = client.orderbook.walk(market_id, after=start, before=end)
+
+        # Rolling series
+        walk = client.orderbook.walk("btc-up-or-down-5m", status="resolved")
+
         for market, book in walk:
             ...
 
@@ -45,16 +51,21 @@ class OrderBookWalk:
         df = walk.to_dataframe()
     """
 
-    def __init__(self, markets: list[Market], orderbook_resource: Any) -> None:
+    def __init__(
+        self, markets: list[Market], orderbook_resource: Any,
+        *, after: Any = None, before: Any = None,
+    ) -> None:
         self._markets = markets
         self._orderbook = orderbook_resource
+        self._after = after
+        self._before = before
 
     def __iter__(self) -> Iterator[tuple[Market, OrderBook]]:
         for market in self._markets:
             history = self._orderbook.history(
                 market.id,
-                after=market.open_time,
-                before=market.close_time,
+                after=self._after or market.open_time,
+                before=self._before or market.close_time,
             )
             replay = OrderBookReplay(
                 history, market_id=market.id, platform=market.platform,
@@ -82,16 +93,21 @@ class OrderBookWalk:
 class AsyncOrderBookWalk:
     """Async version of :class:`OrderBookWalk`."""
 
-    def __init__(self, markets: list[Market], orderbook_resource: Any) -> None:
+    def __init__(
+        self, markets: list[Market], orderbook_resource: Any,
+        *, after: Any = None, before: Any = None,
+    ) -> None:
         self._markets = markets
         self._orderbook = orderbook_resource
+        self._after = after
+        self._before = before
 
     async def __aiter__(self) -> AsyncIterator[tuple[Market, OrderBook]]:
         for market in self._markets:
             history = self._orderbook.history(
                 market.id,
-                after=market.open_time,
-                before=market.close_time,
+                after=self._after or market.open_time,
+                before=self._before or market.close_time,
             )
             replay = AsyncOrderBookReplay(
                 history, market_id=market.id, platform=market.platform,

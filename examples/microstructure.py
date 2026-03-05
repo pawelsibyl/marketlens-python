@@ -1,4 +1,8 @@
-"""Microstructure feature matrix from L2 replay."""
+"""Microstructure feature matrix from L2 replay.
+
+Uses orderbook.walk() with a rolling series slug to build a
+feature matrix across all resolved markets in the series.
+"""
 
 from datetime import datetime, timezone
 

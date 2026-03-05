@@ -1,4 +1,8 @@
-"""Enter each market when spread tightens below threshold."""
+"""Enter each market when spread tightens below threshold.
+
+Uses orderbook.walk() with a rolling series slug — markets form a
+continuous chain where each close feeds into the next open.
+"""
 
 from datetime import datetime, timezone
 

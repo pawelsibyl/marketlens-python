@@ -1,6 +1,7 @@
 import pytest
 
-from marketlens import OrderBookReplay, SnapshotEvent, DeltaEvent, TradeEvent, PriceLevel
+from marketlens import SnapshotEvent, DeltaEvent, TradeEvent, PriceLevel
+from marketlens.helpers.replay import OrderBookReplay
 
 
 def _make_snapshot(t, bids, asks, is_reseed=False):
