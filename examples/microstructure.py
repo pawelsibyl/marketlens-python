@@ -1,27 +1,30 @@
-"""Replay a single market's full L2 book and extract microstructure signals."""
+"""Microstructure feature matrix from L2 replay."""
 
 from datetime import datetime, timezone
 
-from marketlens import MarketLens, OrderBookReplay
+from marketlens import MarketLens
 
 client = MarketLens()
 
-# Grab one recently resolved BTC 5-min market
-slot = next(client.series.walk(
-    "btc-up-or-down-5m", status="resolved", after=datetime(2026, 3, 2, tzinfo=timezone.utc),
-))
+df = client.orderbook.walk(
+    "btc-up-or-down-5m",
+    status="resolved",
+    after=datetime(2026, 3, 5, 8, 40, tzinfo=timezone.utc),
+    before=datetime(2026, 3, 5, 8, 45, tzinfo=timezone.utc),
+).to_dataframe()
 
-df = OrderBookReplay(slot.history(include_trades=True), market_id=slot.market.id).to_dataframe()
+features = df.groupby("market_id").agg(
+    outcome=("winning_outcome", "first"),
+    imbalance=("imbalance", "mean"),
+    spread_bps=("spread_bps", "mean"),
+    mid_start=("midpoint", "first"),
+    mid_end=("midpoint", "last"),
+)
+features["return"] = features["mid_end"] / features["mid_start"] - 1
+features["won_up"] = features["outcome"] == "Up"
 
-trades = df[df["event_type"] == "trade"]
-books = df[df["event_type"] != "trade"].dropna(subset=["midpoint"])
-
-print(f"{slot.market.question}  ->  {slot.market.winning_outcome}")
-print(f"  {len(books):,} book updates, {len(trades):,} trades over {(df.index[-1] - df.index[0]).total_seconds():.0f}s")
-print(f"  midpoint drift:  {books['midpoint'].iloc[0]:.4f} -> {books['midpoint'].iloc[-1]:.4f}")
-print(f"  microprice mean: {books['weighted_midpoint'].mean():.4f}  (vs midpoint {books['midpoint'].mean():.4f})")
-print(f"  imbalance:       mean={books['imbalance'].mean():+.3f}  std={books['imbalance'].std():.3f}")
-print(f"  spread:          mean={books['spread'].mean():.4f}  ({books['spread_bps'].mean():.0f} bps)")
-if not trades.empty:
-    print(f"  trades:          {trades['trade_size'].sum():,.0f} USD  avg size {trades['trade_size'].mean():.1f}")
+bullish = features[features["imbalance"] > 0]["won_up"].mean()
+bearish = features[features["imbalance"] < 0]["won_up"].mean()
+print(f"{len(features)} markets, {len(df):,} book states")
+print(f"Imbalance > 0 → Up won {bullish:.0%} | Imbalance < 0 → Up won {bearish:.0%}")
 client.close()

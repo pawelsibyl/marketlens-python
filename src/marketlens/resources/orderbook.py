@@ -47,8 +47,9 @@ class _HistoryAsyncPageIterator(AsyncPageIterator[HistoryEvent]):
 
 
 class Orderbook:
-    def __init__(self, client: SyncHTTPClient) -> None:
+    def __init__(self, client: SyncHTTPClient, series: Any = None) -> None:
         self._client = client
+        self._series = series
 
     def get(self, market_id: str, *, at: Any = None, depth: int | None = None) -> OrderBook:
         params: dict[str, Any] = {}
@@ -78,10 +79,30 @@ class Orderbook:
             self._client, f"/markets/{market_id}/orderbook/metrics", params, BookMetrics
         )
 
+    def walk(
+        self, series_id: str, *, after: Any = None, before: Any = None, **params: Any,
+    ):
+        """Replay L2 books across every market in a series.
+
+        Returns an :class:`~marketlens.helpers.walk.OrderBookWalk` that yields
+        ``(Market, OrderBook)`` tuples and supports ``.to_dataframe()``.
+
+        Args:
+            series_id: Series identifier or platform slug.
+            after: Only include markets closing at or after this time.
+            before: Only include markets closing at or before this time.
+            **params: Extra filter params (e.g. ``status``, ``platform``).
+        """
+        from marketlens.helpers.walk import OrderBookWalk
+
+        markets = list(self._series.walk(series_id, after=after, before=before, **params))
+        return OrderBookWalk(markets, self)
+
 
 class AsyncOrderbook:
-    def __init__(self, client: AsyncHTTPClient) -> None:
+    def __init__(self, client: AsyncHTTPClient, series: Any = None) -> None:
         self._client = client
+        self._series = series
 
     async def get(self, market_id: str, *, at: Any = None, depth: int | None = None) -> OrderBook:
         params: dict[str, Any] = {}
@@ -110,3 +131,14 @@ class AsyncOrderbook:
         return AsyncPageIterator(
             self._client, f"/markets/{market_id}/orderbook/metrics", params, BookMetrics
         )
+
+    async def walk(
+        self, series_id: str, *, after: Any = None, before: Any = None, **params: Any,
+    ):
+        """Async version of :meth:`Orderbook.walk`."""
+        from marketlens.helpers.walk import AsyncOrderBookWalk
+
+        markets = []
+        async for market in self._series.walk(series_id, after=after, before=before, **params):
+            markets.append(market)
+        return AsyncOrderBookWalk(markets, self)

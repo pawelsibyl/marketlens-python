@@ -14,7 +14,7 @@ from marketlens.exceptions import (
     TimeoutError,
 )
 from marketlens.helpers.replay import AsyncOrderBookReplay, OrderBookReplay
-from marketlens.helpers.walk import AsyncMarketSlot, MarketSlot
+from marketlens.helpers.walk import AsyncOrderBookWalk, OrderBookWalk
 from marketlens.types import (
     BookMetrics,
     Candle,
@@ -61,8 +61,8 @@ __all__ = [
     # Helpers
     "OrderBookReplay",
     "AsyncOrderBookReplay",
-    "MarketSlot",
-    "AsyncMarketSlot",
+    "OrderBookWalk",
+    "AsyncOrderBookWalk",
     # Exceptions
     "MarketLensError",
     "APIError",

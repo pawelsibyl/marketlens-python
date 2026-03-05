@@ -3,7 +3,7 @@
 from marketlens import MarketLens
 
 client = MarketLens()
-market = client.markets.list(status="active", sort="-liquidity", limit=1).first_page()[0]
+market = client.markets.get("a23fb05b-2b54-5b69-98b5-568ac3dd4f6b")
 book = client.orderbook.get(market.id)
 
 print(f"{market.question}")

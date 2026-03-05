@@ -12,6 +12,37 @@ FOUR = Decimal("0.0001")
 ZERO = Decimal("0")
 
 
+def _book_to_row(book: OrderBook) -> dict:
+    """Extract standard book metrics into a dict row."""
+    wmid = book.weighted_midpoint(1)
+    return {
+        "best_bid": float(book.best_bid) if book.best_bid else None,
+        "best_ask": float(book.best_ask) if book.best_ask else None,
+        "spread": float(book.spread) if book.spread else None,
+        "midpoint": float(book.midpoint) if book.midpoint else None,
+        "bid_depth": float(book.bid_depth) if book.bid_depth else None,
+        "ask_depth": float(book.ask_depth) if book.ask_depth else None,
+        "bid_levels": book.bid_levels,
+        "ask_levels": book.ask_levels,
+        "imbalance": book.imbalance(),
+        "weighted_midpoint": float(wmid) if wmid else None,
+        "spread_bps": book.spread_bps(),
+    }
+
+
+def _rows_to_dataframe(rows: list[dict]):
+    """Convert rows with a ``t`` column (epoch ms) to a DataFrame."""
+    import pandas as pd
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df["t"] = pd.to_datetime(df["t"], unit="ms", utc=True)
+    df = df.set_index("t")
+    return df
+
+
 def _build_book(
     bids: dict[str, Decimal],
     asks: dict[str, Decimal],
@@ -141,28 +172,12 @@ class OrderBookReplay:
         - ``spread_bps`` — ``float64`` (spread in basis points)
 
         """
-        import pandas as pd
-
         rows: list[dict] = []
         for event, book in self:
-            wmid = book.weighted_midpoint(1)
-            row: dict = {
-                "t": event.t,
-                "event_type": event.type,
-                "best_bid": float(book.best_bid) if book.best_bid else None,
-                "best_ask": float(book.best_ask) if book.best_ask else None,
-                "spread": float(book.spread) if book.spread else None,
-                "midpoint": float(book.midpoint) if book.midpoint else None,
-                "bid_depth": float(book.bid_depth) if book.bid_depth else None,
-                "ask_depth": float(book.ask_depth) if book.ask_depth else None,
-                "bid_levels": book.bid_levels,
-                "ask_levels": book.ask_levels,
-                "imbalance": book.imbalance(),
-                "weighted_midpoint": float(wmid) if wmid else None,
-                "spread_bps": book.spread_bps(),
-            }
+            row = _book_to_row(book)
+            row["t"] = event.t
+            row["event_type"] = event.type
 
-            # Add trade-specific columns when trades are present
             if isinstance(event, TradeEvent):
                 row["trade_price"] = float(event.price)
                 row["trade_size"] = float(event.size)
@@ -170,13 +185,7 @@ class OrderBookReplay:
 
             rows.append(row)
 
-        if not rows:
-            return pd.DataFrame()
-
-        df = pd.DataFrame(rows)
-        df["t"] = pd.to_datetime(df["t"], unit="ms", utc=True)
-        df = df.set_index("t")
-        return df
+        return _rows_to_dataframe(rows)
 
 
 class AsyncOrderBookReplay:
@@ -234,26 +243,11 @@ class AsyncOrderBookReplay:
 
     async def to_dataframe(self):
         """Async version of :meth:`OrderBookReplay.to_dataframe`."""
-        import pandas as pd
-
         rows: list[dict] = []
         async for event, book in self:
-            wmid = book.weighted_midpoint(1)
-            row: dict = {
-                "t": event.t,
-                "event_type": event.type,
-                "best_bid": float(book.best_bid) if book.best_bid else None,
-                "best_ask": float(book.best_ask) if book.best_ask else None,
-                "spread": float(book.spread) if book.spread else None,
-                "midpoint": float(book.midpoint) if book.midpoint else None,
-                "bid_depth": float(book.bid_depth) if book.bid_depth else None,
-                "ask_depth": float(book.ask_depth) if book.ask_depth else None,
-                "bid_levels": book.bid_levels,
-                "ask_levels": book.ask_levels,
-                "imbalance": book.imbalance(),
-                "weighted_midpoint": float(wmid) if wmid else None,
-                "spread_bps": book.spread_bps(),
-            }
+            row = _book_to_row(book)
+            row["t"] = event.t
+            row["event_type"] = event.type
 
             if isinstance(event, TradeEvent):
                 row["trade_price"] = float(event.price)
@@ -262,10 +256,4 @@ class AsyncOrderBookReplay:
 
             rows.append(row)
 
-        if not rows:
-            return pd.DataFrame()
-
-        df = pd.DataFrame(rows)
-        df["t"] = pd.to_datetime(df["t"], unit="ms", utc=True)
-        df = df.set_index("t")
-        return df
+        return _rows_to_dataframe(rows)

@@ -31,7 +31,7 @@ class MarketLens:
         self.markets = Markets(self._http)
         self.events = Events(self._http)
         self.series = SeriesResource(self._http)
-        self.orderbook = Orderbook(self._http)
+        self.orderbook = Orderbook(self._http, self.series)
 
     def close(self) -> None:
         self._http.close()
@@ -66,7 +66,7 @@ class AsyncMarketLens:
         self.markets = AsyncMarkets(self._http)
         self.events = AsyncEvents(self._http)
         self.series = AsyncSeriesResource(self._http)
-        self.orderbook = AsyncOrderbook(self._http)
+        self.orderbook = AsyncOrderbook(self._http, self.series)
 
     async def close(self) -> None:
         await self._http.close()

@@ -40,21 +40,16 @@ class SeriesResource:
 
     def walk(
         self, series_id: str, *, after: Any = None, before: Any = None, **params: Any,
-    ) -> Iterator:
-        """Iterate markets in a series chronologically, yielding :class:`MarketSlot` objects.
-
-        Each slot has lazy loaders for the market's candles, trades, and
-        orderbook data — so you never load data you don't need.
+    ) -> Iterator[Market]:
+        """Iterate markets in a series chronologically.
 
         Markets are sorted by ``close_time`` ascending (earliest first).
         Pass ``status="resolved"`` to only walk completed markets.
 
         Usage::
 
-            for slot in client.series.walk("btc-5min-rolling", status="resolved"):
-                df = slot.candles("1m").to_dataframe()
-                book = slot.orderbook()
-                print(slot.market.question, book.spread, slot.overlap_with_prev)
+            for market in client.series.walk("btc-up-or-down-5m", status="resolved"):
+                ...
 
         Args:
             series_id: Series identifier.
@@ -64,8 +59,6 @@ class SeriesResource:
                 (epoch ms or ``datetime``).
             **params: Extra filter params (e.g. ``status``, ``platform``).
         """
-        from marketlens.helpers.walk import MarketSlot
-
         resolved = self._resolve(series_id)
         params["sort"] = "close_time"
 
@@ -81,10 +74,7 @@ class SeriesResource:
                 self._client, f"/series/{resolved.id}/markets", params, Market,
             ).to_list()
 
-        for i, market in enumerate(markets):
-            prev_market = markets[i - 1] if i > 0 else None
-            next_market = markets[i + 1] if i < len(markets) - 1 else None
-            yield MarketSlot(market, i, prev_market, next_market, self._client)
+        yield from markets
 
 
 class AsyncSeriesResource:
@@ -122,11 +112,9 @@ class AsyncSeriesResource:
 
         Usage::
 
-            async for slot in client.series.walk("btc-5min-rolling"):
-                book = await slot.orderbook()
+            async for market in client.series.walk("btc-5min-rolling"):
+                print(market.question)
         """
-        from marketlens.helpers.walk import AsyncMarketSlot
-
         resolved = await self._resolve(series_id)
         params["sort"] = "close_time"
 
@@ -144,7 +132,5 @@ class AsyncSeriesResource:
                 self._client, f"/series/{resolved.id}/markets", params, Market,
             ).to_list()
 
-        for i, market in enumerate(markets):
-            prev_market = markets[i - 1] if i > 0 else None
-            next_market = markets[i + 1] if i < len(markets) - 1 else None
-            yield AsyncMarketSlot(market, i, prev_market, next_market, self._client)
+        for market in markets:
+            yield market

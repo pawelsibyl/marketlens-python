@@ -1,7 +1,7 @@
 import httpx
 
-from conftest import BASE_URL, SAMPLE_MARKET, SAMPLE_CANDLE, SAMPLE_ORDERBOOK, SAMPLE_SERIES
-from marketlens.helpers.walk import MarketSlot
+from conftest import BASE_URL, SAMPLE_MARKET, SAMPLE_SERIES
+from marketlens.types.market import Market
 
 
 def _market_with(overrides):
@@ -15,13 +15,40 @@ def _mock_series_resolve(mock_api):
     )
 
 
+SNAPSHOT_1 = {
+    "type": "snapshot",
+    "t": 1000,
+    "is_reseed": False,
+    "bids": [{"price": "0.60", "size": "100.0"}],
+    "asks": [{"price": "0.70", "size": "100.0"}],
+}
+DELTA_1 = {
+    "type": "delta",
+    "t": 1500,
+    "price": "0.61",
+    "size": "50.0",
+    "side": "BUY",
+}
+SNAPSHOT_2 = {
+    "type": "snapshot",
+    "t": 5000,
+    "is_reseed": False,
+    "bids": [{"price": "0.55", "size": "200.0"}],
+    "asks": [{"price": "0.65", "size": "200.0"}],
+}
+
+
+def _history_response(*events):
+    return {"data": list(events), "meta": {"cursor": None, "has_more": False}}
+
+
 class TestSeriesWalk:
-    def test_walk_yields_slots_in_order(self, mock_api, client):
-        """walk() should yield MarketSlot objects in chronological order."""
+    def test_series_walk_yields_markets(self, mock_api, client):
+        """walk() should yield Market objects in chronological order."""
         _mock_series_resolve(mock_api)
         m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 2000})
-        m2 = _market_with({"id": "m2", "open_time": 1500, "close_time": 2500})
-        m3 = _market_with({"id": "m3", "open_time": 2000, "close_time": 3000})
+        m2 = _market_with({"id": "m2", "open_time": 2000, "close_time": 3000})
+        m3 = _market_with({"id": "m3", "open_time": 3000, "close_time": 4000})
 
         mock_api.get("/series/btc-daily/markets").mock(
             return_value=httpx.Response(200, json={
@@ -30,74 +57,19 @@ class TestSeriesWalk:
             })
         )
 
-        slots = list(client.series.walk("btc-daily"))
-        assert len(slots) == 3
-        assert isinstance(slots[0], MarketSlot)
-        assert slots[0].market.id == "m1"
-        assert slots[0].index == 0
-        assert slots[0].prev_market is None
-        assert slots[0].next_market.id == "m2"
+        markets = list(client.series.walk("btc-daily"))
+        assert len(markets) == 3
+        assert all(isinstance(m, Market) for m in markets)
+        assert markets[0].id == "m1"
+        assert markets[1].id == "m2"
+        assert markets[2].id == "m3"
 
-        assert slots[1].prev_market.id == "m1"
-        assert slots[1].next_market.id == "m3"
 
-        assert slots[2].prev_market.id == "m2"
-        assert slots[2].next_market is None
-
-    def test_slot_overlap_with_prev(self, mock_api, client):
-        """Detect overlapping markets in a rolling series."""
-        _mock_series_resolve(mock_api)
-        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
-        m2 = _market_with({"id": "m2", "open_time": 4000, "close_time": 9000})
-
-        mock_api.get("/series/btc-daily/markets").mock(
-            return_value=httpx.Response(200, json={
-                "data": [m1, m2],
-                "meta": {"cursor": None, "has_more": False},
-            })
-        )
-
-        slots = list(client.series.walk("btc-daily"))
-        assert slots[0].overlap_with_prev is None  # first market
-        assert slots[1].overlap_with_prev == 2000  # m1 closes 6000, m2 opens 4000
-
-    def test_slot_gap_from_prev(self, mock_api, client):
-        """Detect gaps between markets."""
+class TestOrderbookWalk:
+    def test_orderbook_walk_yields_tuples(self, mock_api, client):
+        """walk() should yield (Market, OrderBook) tuples."""
         _mock_series_resolve(mock_api)
         m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 2000})
-        m2 = _market_with({"id": "m2", "open_time": 5000, "close_time": 6000})
-
-        mock_api.get("/series/btc-daily/markets").mock(
-            return_value=httpx.Response(200, json={
-                "data": [m1, m2],
-                "meta": {"cursor": None, "has_more": False},
-            })
-        )
-
-        slots = list(client.series.walk("btc-daily"))
-        assert slots[1].gap_from_prev == 3000  # m1 closes 2000, m2 opens 5000
-
-    def test_slot_contiguous_markets(self, mock_api, client):
-        """Contiguous markets (close == next open) should report 0 gap and 0 overlap."""
-        _mock_series_resolve(mock_api)
-        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 2000})
-        m2 = _market_with({"id": "m2", "open_time": 2000, "close_time": 3000})
-
-        mock_api.get("/series/btc-daily/markets").mock(
-            return_value=httpx.Response(200, json={
-                "data": [m1, m2],
-                "meta": {"cursor": None, "has_more": False},
-            })
-        )
-
-        slots = list(client.series.walk("btc-daily"))
-        assert slots[1].overlap_with_prev == 0
-        assert slots[1].gap_from_prev == 0
-
-    def test_slot_candles(self, mock_api, client):
-        """Slot.candles() should load candles for the market."""
-        _mock_series_resolve(mock_api)
-        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
 
         mock_api.get("/series/btc-daily/markets").mock(
             return_value=httpx.Response(200, json={
@@ -105,41 +77,51 @@ class TestSeriesWalk:
                 "meta": {"cursor": None, "has_more": False},
             })
         )
-        mock_api.get("/markets/m1/candles").mock(
-            return_value=httpx.Response(200, json={
-                "data": [SAMPLE_CANDLE],
-                "meta": {"cursor": None, "has_more": False},
-            })
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1))
         )
 
-        slots = list(client.series.walk("btc-daily"))
-        candles = slots[0].candles("1m").to_list()
-        assert len(candles) == 1
-        assert candles[0].trade_count == 47
+        results = list(client.orderbook.walk("btc-daily"))
+        assert len(results) == 1
+        market, book = results[0]
+        assert isinstance(market, Market)
+        assert market.id == "m1"
+        assert book.best_bid == "0.60"
 
-    def test_slot_orderbook(self, mock_api, client):
-        """Slot.orderbook() should load the book for the market."""
+    def test_orderbook_walk_multiple_markets(self, mock_api, client):
+        """walk() should cross market boundaries with fresh replay per market."""
         _mock_series_resolve(mock_api)
-        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 2000})
+        m2 = _market_with({"id": "m2", "open_time": 3000, "close_time": 6000})
 
         mock_api.get("/series/btc-daily/markets").mock(
             return_value=httpx.Response(200, json={
-                "data": [m1],
+                "data": [m1, m2],
                 "meta": {"cursor": None, "has_more": False},
             })
         )
-        mock_api.get("/markets/m1/orderbook").mock(
-            return_value=httpx.Response(200, json=SAMPLE_ORDERBOOK)
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1, DELTA_1))
+        )
+        mock_api.get("/markets/m2/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_2))
         )
 
-        slots = list(client.series.walk("btc-daily"))
-        book = slots[0].orderbook()
-        assert book.best_bid == "0.6500"
+        results = list(client.orderbook.walk("btc-daily"))
+        assert len(results) == 3  # snapshot + delta from m1, snapshot from m2
 
-    def test_walk_with_status_filter(self, mock_api, client):
-        """Walk should pass filter params through."""
+        # m1 events
+        assert results[0][0].id == "m1"
+        assert results[1][0].id == "m1"
+        # m2 event — fresh replay, different book
+        assert results[2][0].id == "m2"
+        assert results[2][1].best_bid == "0.55"
+
+    def test_orderbook_walk_params_passthrough(self, mock_api, client):
+        """status and other params should be forwarded to series.walk."""
         _mock_series_resolve(mock_api)
-        m1 = _market_with({"id": "m1", "status": "resolved"})
+        m1 = _market_with({"id": "m1", "status": "resolved",
+                           "open_time": 1000, "close_time": 2000})
 
         route = mock_api.get("/series/btc-daily/markets").mock(
             return_value=httpx.Response(200, json={
@@ -147,7 +129,49 @@ class TestSeriesWalk:
                 "meta": {"cursor": None, "has_more": False},
             })
         )
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1))
+        )
 
-        list(client.series.walk("btc-daily", status="resolved"))
-        # Check that status param was sent
+        list(client.orderbook.walk("btc-daily", status="resolved"))
         assert route.call_count == 1
+
+    def test_orderbook_walk_to_dataframe(self, mock_api, client):
+        """to_dataframe() should include market_id and winning_outcome columns."""
+        _mock_series_resolve(mock_api)
+        m1 = _market_with({
+            "id": "m1", "open_time": 1000, "close_time": 2000,
+            "status": "resolved", "winning_outcome": "Up",
+        })
+
+        mock_api.get("/series/btc-daily/markets").mock(
+            return_value=httpx.Response(200, json={
+                "data": [m1],
+                "meta": {"cursor": None, "has_more": False},
+            })
+        )
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1, DELTA_1))
+        )
+
+        df = client.orderbook.walk("btc-daily").to_dataframe()
+        assert "market_id" in df.columns
+        assert "winning_outcome" in df.columns
+        assert list(df["market_id"].unique()) == ["m1"]
+        assert list(df["winning_outcome"].unique()) == ["Up"]
+        assert "midpoint" in df.columns
+        assert "spread_bps" in df.columns
+        assert len(df) == 2
+
+    def test_orderbook_walk_to_dataframe_empty(self, mock_api, client):
+        """to_dataframe() with no markets returns empty DataFrame."""
+        _mock_series_resolve(mock_api)
+        mock_api.get("/series/btc-daily/markets").mock(
+            return_value=httpx.Response(200, json={
+                "data": [],
+                "meta": {"cursor": None, "has_more": False},
+            })
+        )
+
+        df = client.orderbook.walk("btc-daily").to_dataframe()
+        assert df.empty

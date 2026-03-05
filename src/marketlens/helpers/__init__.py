@@ -1,4 +1,4 @@
 from marketlens.helpers.replay import OrderBookReplay, AsyncOrderBookReplay
-from marketlens.helpers.walk import MarketSlot, AsyncMarketSlot
+from marketlens.helpers.walk import OrderBookWalk, AsyncOrderBookWalk
 
-__all__ = ["OrderBookReplay", "AsyncOrderBookReplay", "MarketSlot", "AsyncMarketSlot"]
+__all__ = ["OrderBookReplay", "AsyncOrderBookReplay", "OrderBookWalk", "AsyncOrderBookWalk"]
