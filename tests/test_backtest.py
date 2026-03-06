@@ -441,7 +441,7 @@ class TestStrategyContext:
         mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
-        result = client.backtest(BuyOnce(), "m1", after=1000, before=6000)
+        result = client.backtest(BuyOnce(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         assert result.total_trades == 1
 
     def test_sell_validation_raises(self, mock_api, client):
@@ -456,7 +456,7 @@ class TestStrategyContext:
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
         with pytest.raises(ValueError, match="Cannot sell"):
-            client.backtest(SellWithoutHolding(), "m1", after=1000, before=6000)
+            client.backtest(SellWithoutHolding(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
 
     def test_limit_price_validation(self, mock_api, client):
         """Limit price outside (0, 1) should raise ValueError."""
@@ -470,7 +470,7 @@ class TestStrategyContext:
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
         with pytest.raises(ValueError, match="Limit price must be in"):
-            client.backtest(BadLimit(), "m1", after=1000, before=6000)
+            client.backtest(BadLimit(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
 
     def test_cancel_order(self, mock_api, client):
         """Cancelling a limit order should set status to CANCELLED."""
@@ -487,7 +487,7 @@ class TestStrategyContext:
         mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
-        client.backtest(PlaceAndCancel(), "m1", after=1000, before=6000)
+        client.backtest(PlaceAndCancel(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         assert cancelled[0].status == OrderStatus.CANCELLED
 
 
@@ -511,7 +511,7 @@ class TestEngineIntegration:
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
 
-        result = client.backtest(BuyFirst(), "m1", after=1000, before=6000)
+        result = client.backtest(BuyFirst(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         assert result.total_trades == 1
         assert Decimal(result.total_pnl) > 0
         assert len(result.settlements_df()) == 1
@@ -534,7 +534,7 @@ class TestEngineIntegration:
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
 
-        result = client.backtest(BuyFirst(), "m1", after=1000, before=6000)
+        result = client.backtest(BuyFirst(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         assert Decimal(result.total_pnl) < 0
 
     def test_sell_before_settlement(self, mock_api, client):
@@ -560,7 +560,7 @@ class TestEngineIntegration:
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1, DELTA_1, SNAPSHOT_2)))
 
-        result = client.backtest(BuyAndSell(), "m1", after=1000, before=6000)
+        result = client.backtest(BuyAndSell(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         assert result.total_trades == 2
         # No settlement since position is flat
         assert len(result.settlements_df()) == 0
@@ -582,7 +582,7 @@ class TestEngineIntegration:
             return_value=httpx.Response(200, json=_history_response(
                 SNAPSHOT_1, TRADE_SELL, SNAPSHOT_2)))
 
-        result = client.backtest(LimitBuyer(), "m1", after=1000, before=6000)
+        result = client.backtest(LimitBuyer(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         # TRADE_SELL is side=SELL at price 0.65, should trigger BUY_YES limit at 0.65
         assert result.total_trades == 1
 
@@ -603,7 +603,7 @@ class TestEngineIntegration:
             return_value=httpx.Response(200, json=_history_response(
                 SNAPSHOT_1, TRADE_BUY, SNAPSHOT_2)))
 
-        result = client.backtest(LimitBuyer(), "m1", after=1000, before=6000)
+        result = client.backtest(LimitBuyer(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         assert result.total_trades == 0
 
     def test_multi_market_series(self, mock_api, client):
@@ -642,6 +642,7 @@ class TestEngineIntegration:
 
         result = client.backtest(
             BuyEveryMarket(), "btc-daily", status="resolved",
+            latency_ms=0, limit_fill_rate=1.0,
         )
         assert result.markets_traded == 2
         assert len(result.settlements_df()) == 2
@@ -665,7 +666,7 @@ class TestEngineIntegration:
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1, DELTA_1)))
 
-        client.backtest(LifecycleTracker(), "m1", after=1000, before=6000)
+        client.backtest(LifecycleTracker(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         assert calls == ["start", "book", "book", "end"]
 
     def test_on_trade_called(self, mock_api, client):
@@ -682,7 +683,7 @@ class TestEngineIntegration:
             return_value=httpx.Response(200, json=_history_response(
                 SNAPSHOT_1, TRADE_SELL, TRADE_BUY)))
 
-        client.backtest(TradeTracker(), "m1", after=1000, before=6000)
+        client.backtest(TradeTracker(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         assert len(trades_seen) == 2
         assert trades_seen[0].side == "SELL"
         assert trades_seen[1].side == "BUY"
@@ -704,7 +705,7 @@ class TestEngineIntegration:
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
 
-        client.backtest(FillTracker(), "m1", after=1000, before=6000)
+        client.backtest(FillTracker(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         assert len(fills_seen) == 1
         assert fills_seen[0].side == OrderSide.BUY_YES
 
@@ -720,7 +721,7 @@ class TestEngineIntegration:
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1, DELTA_1)))
 
-        result = client.backtest(ExpireTest(), "m1", after=1000, before=6000)
+        result = client.backtest(ExpireTest(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         # DELTA_1 is at t=1500 > cancel_after=1200, so order should expire
         assert result.total_trades == 0
         orders = result.orders_df()
@@ -743,7 +744,7 @@ class TestEngineIntegration:
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(empty_snapshot)))
 
-        result = client.backtest(BuyEmpty(), "m1", after=1000, before=6000)
+        result = client.backtest(BuyEmpty(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         assert result.total_trades == 0
         assert result.orders_df()["status"].iloc[0] == "CANCELLED"
 
@@ -764,7 +765,7 @@ class TestEngineIntegration:
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
 
-        result = client.backtest(BuyNo(), "m1", after=1000, before=6000)
+        result = client.backtest(BuyNo(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         assert result.total_trades == 1
         settlements = result.settlements_df()
         assert len(settlements) == 1
@@ -782,7 +783,7 @@ class TestEngineIntegration:
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
 
-        result = client.backtest(Noop(), "m1", after=1000, before=6000, initial_cash="50000.0000")
+        result = client.backtest(Noop(), "m1", after=1000, before=6000, initial_cash="50000.0000", latency_ms=0, limit_fill_rate=1.0)
         assert result.total_pnl == "0.0000"
         assert result.total_return == 0.0
 
@@ -806,7 +807,7 @@ class TestBacktestResult:
         mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
-        return client.backtest(BuyFirst(), "m1", after=1000, before=6000)
+        return client.backtest(BuyFirst(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
 
     def test_summary_keys(self, mock_api, client):
         result = self._run_simple(mock_api, client)
@@ -875,7 +876,7 @@ class TestBacktestResult:
         mock_api.get("/markets/m1/orderbook/history").mock(
             return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
 
-        result = client.backtest(Noop(), "m1", after=1000, before=6000)
+        result = client.backtest(Noop(), "m1", after=1000, before=6000, latency_ms=0, limit_fill_rate=1.0)
         assert result.total_trades == 0
         assert result.win_rate == 0.0
         assert result.profit_factor == 0.0
@@ -883,3 +884,292 @@ class TestBacktestResult:
         assert result.sharpe_ratio is None
         assert result.trades_df().empty
         assert result.settlements_df().empty
+
+
+# ── Latency Simulation Tests ────────────────────────────────────
+
+class TestLatencySimulation:
+    def test_market_order_delayed_by_latency(self, mock_api, client):
+        """Market order at t=1000 with 50ms latency fills at t>=1050."""
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes", "winning_outcome_index": 0,
+            "open_time": 1000, "close_time": 6000, "resolved_at": 6000,
+        })
+        fill_times = []
+
+        class BuyFirst(Strategy):
+            def on_book(self, ctx, market, book):
+                if ctx.position().side == "FLAT":
+                    ctx.buy_yes(size="100.0000")
+
+            def on_fill(self, ctx, market, fill):
+                fill_times.append(fill.timestamp)
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(
+                SNAPSHOT_1, DELTA_1, SNAPSHOT_2)))
+
+        result = client.backtest(BuyFirst(), "m1", after=1000, before=6000,
+                                 latency_ms=50, limit_fill_rate=1.0)
+        assert result.total_trades == 1
+        # Order submitted at t=1000 (SNAPSHOT_1), activates at t=1050
+        # First event after that is DELTA_1 at t=1500
+        assert fill_times[0] == 1500
+
+    def test_no_latency_fills_immediately(self, mock_api, client):
+        """With latency_ms=0, market order fills on the same event."""
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes", "winning_outcome_index": 0,
+            "open_time": 1000, "close_time": 6000, "resolved_at": 6000,
+        })
+        fill_times = []
+
+        class BuyFirst(Strategy):
+            def on_book(self, ctx, market, book):
+                if ctx.position().side == "FLAT":
+                    ctx.buy_yes(size="100.0000")
+
+            def on_fill(self, ctx, market, fill):
+                fill_times.append(fill.timestamp)
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+
+        result = client.backtest(BuyFirst(), "m1", after=1000, before=6000,
+                                 latency_ms=0, limit_fill_rate=1.0)
+        assert result.total_trades == 1
+        assert fill_times[0] == 1000
+
+    def test_latency_fills_against_later_book(self, mock_api, client):
+        """Delayed order fills against the book at activation time, not submission time."""
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes", "winning_outcome_index": 0,
+            "open_time": 1000, "close_time": 6000, "resolved_at": 6000,
+        })
+
+        class BuyFirst(Strategy):
+            def on_book(self, ctx, market, book):
+                if ctx.position().side == "FLAT":
+                    ctx.buy_yes(size="100.0000")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        # SNAPSHOT_1 asks: 0.67/100, 0.68/250
+        # SNAPSHOT_2 asks: 0.68/300 (worse price)
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(
+                SNAPSHOT_1, SNAPSHOT_2)))
+
+        result = client.backtest(BuyFirst(), "m1", after=1000, before=6000,
+                                 latency_ms=50, limit_fill_rate=1.0)
+        assert result.total_trades == 1
+        # Fills against SNAPSHOT_2 book (asks at 0.68), not SNAPSHOT_1 (asks at 0.67)
+        fill_price = result.trades_df()["price"].iloc[0]
+        assert abs(fill_price - 0.68) < 0.0001
+
+    def test_latency_no_fill_if_only_one_event(self, mock_api, client):
+        """With latency and only one event, order stays pending → cancelled."""
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
+
+        class BuyFirst(Strategy):
+            def on_book(self, ctx, market, book):
+                if ctx.position().side == "FLAT":
+                    ctx.buy_yes(size="100.0000")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+
+        result = client.backtest(BuyFirst(), "m1", after=1000, before=6000,
+                                 latency_ms=50, limit_fill_rate=1.0)
+        assert result.total_trades == 0
+
+    def test_latency_limit_order_delayed_activation(self, mock_api, client):
+        """Limit order with latency becomes OPEN only after delay."""
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes", "winning_outcome_index": 0,
+            "open_time": 1000, "close_time": 6000, "resolved_at": 6000,
+        })
+
+        class LimitBuyer(Strategy):
+            def on_market_start(self, ctx, market, book):
+                ctx.buy_yes(size="50.0000", limit_price="0.6500")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        # Limit placed at t=1000, activates at t=1050
+        # TRADE_SELL at t=2000 (price 0.65) should trigger fill since order is active by then
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(
+                SNAPSHOT_1, DELTA_1, TRADE_SELL, SNAPSHOT_2)))
+
+        result = client.backtest(LimitBuyer(), "m1", after=1000, before=6000,
+                                 latency_ms=50, limit_fill_rate=1.0)
+        assert result.total_trades == 1
+
+    def test_cancel_pending_order(self, mock_api, client):
+        """Cancelling a pending (not yet activated) order should work."""
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
+
+        class CancelPending(Strategy):
+            def on_market_start(self, ctx, market, book):
+                order = ctx.buy_yes(size="100.0000")
+                ctx.cancel(order)
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(
+                SNAPSHOT_1, DELTA_1, SNAPSHOT_2)))
+
+        result = client.backtest(CancelPending(), "m1", after=1000, before=6000,
+                                 latency_ms=50, limit_fill_rate=1.0)
+        assert result.total_trades == 0
+        assert result.orders_df()["status"].iloc[0] == "CANCELLED"
+
+
+# ── Slippage Buffer Tests ──────────────────────────────────────
+
+class TestSlippageBuffer:
+    def _sim(self, slippage_bps):
+        return FillSimulator(ZeroFeeModel(), slippage_bps=slippage_bps)
+
+    def _order(self, side, size):
+        return Order(
+            id="ord-1", market_id="m1", side=side,
+            order_type=OrderType.MARKET, size=size, submitted_at=1000,
+        )
+
+    def test_buy_yes_slippage_increases_price(self):
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000")
+        fill = self._sim(slippage_bps=100).try_fill_market_order(order, book, 1000)
+        assert fill is not None
+        # Base price = 0.67, slippage = 0.67 * 100/10000 = 0.0067 → 0.6767
+        assert Decimal(fill.price) == Decimal("0.6767")
+
+    def test_sell_yes_slippage_decreases_price(self):
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.SELL_YES, "50.0000")
+        fill = self._sim(slippage_bps=100).try_fill_market_order(order, book, 1000)
+        assert fill is not None
+        # Base price = 0.65, slippage = 0.65 * 100/10000 = 0.0065 → 0.6435
+        assert Decimal(fill.price) == Decimal("0.6435")
+
+    def test_buy_no_slippage_increases_price(self):
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_NO, "50.0000")
+        fill = self._sim(slippage_bps=100).try_fill_market_order(order, book, 1000)
+        assert fill is not None
+        # NO price = 1 - 0.65 = 0.35, slippage = 0.35 * 100/10000 = 0.0035 → 0.3535
+        assert Decimal(fill.price) == Decimal("0.3535")
+
+    def test_zero_slippage_no_change(self):
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000")
+        fill = self._sim(slippage_bps=0).try_fill_market_order(order, book, 1000)
+        assert fill is not None
+        assert Decimal(fill.price) == Decimal("0.6700")
+
+    def test_slippage_in_engine(self, mock_api, client):
+        """Slippage applied through the engine."""
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes", "winning_outcome_index": 0,
+            "open_time": 1000, "close_time": 6000, "resolved_at": 6000,
+        })
+
+        class BuyFirst(Strategy):
+            def on_book(self, ctx, market, book):
+                if ctx.position().side == "FLAT":
+                    ctx.buy_yes(size="100.0000")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+
+        result = client.backtest(BuyFirst(), "m1", after=1000, before=6000,
+                                 latency_ms=0, limit_fill_rate=1.0, slippage_bps=100)
+        fill_price = Decimal(result.trades_df()["price"].iloc[0])
+        # Asks: 0.67/100, 0.68/250 → VWAP = 0.6733... + slippage
+        assert fill_price > Decimal("0.6700")
+
+
+# ── Limit Fill Rate Tests ──────────────────────────────────────
+
+class TestLimitFillRate:
+    def _sim(self, limit_fill_rate):
+        return FillSimulator(ZeroFeeModel(), limit_fill_rate=limit_fill_rate)
+
+    def _order(self, side, size, limit_price):
+        return Order(
+            id="ord-1", market_id="m1", side=side,
+            order_type=OrderType.LIMIT, size=size, limit_price=limit_price,
+            submitted_at=1000, status=OrderStatus.OPEN,
+        )
+
+    def _trade(self, side, price, size="100.0000"):
+        return TradeEvent(type="trade", t=2000, id="t1", price=price, size=size, side=side)
+
+    def test_fill_rate_reduces_size(self):
+        """With fill_rate=0.1, only 10% of trade size fills."""
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "200.0000", "0.6500")
+        trade = self._trade("SELL", "0.6500", size="100.0000")
+        fill = self._sim(limit_fill_rate=0.1).try_fill_limit_order(order, book, trade, 2000)
+        assert fill is not None
+        assert fill.size == "10.0000"  # 100 * 0.1 = 10
+
+    def test_fill_rate_one_gives_full_trade(self):
+        """With fill_rate=1.0, full trade size fills (original behavior)."""
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "200.0000", "0.6500")
+        trade = self._trade("SELL", "0.6500", size="50.0000")
+        fill = self._sim(limit_fill_rate=1.0).try_fill_limit_order(order, book, trade, 2000)
+        assert fill is not None
+        assert fill.size == "50.0000"
+
+    def test_fill_rate_caps_at_remaining(self):
+        """Fill size capped by remaining order size even with fill_rate."""
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "5.0000", "0.6500")
+        trade = self._trade("SELL", "0.6500", size="100.0000")
+        fill = self._sim(limit_fill_rate=0.5).try_fill_limit_order(order, book, trade, 2000)
+        assert fill is not None
+        assert fill.size == "5.0000"  # remaining < trade*rate (50), so fill = remaining
+
+    def test_very_small_fill_rate_rounds_to_zero(self):
+        """Tiny fill_rate * small trade → rounds to zero → no fill."""
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "200.0000", "0.6500")
+        trade = self._trade("SELL", "0.6500", size="0.0001")
+        fill = self._sim(limit_fill_rate=0.01).try_fill_limit_order(order, book, trade, 2000)
+        assert fill is None  # 0.0001 * 0.01 = 0.000001 → rounds to 0
+
+    def test_fill_rate_in_engine(self, mock_api, client):
+        """Limit fill rate applied through the engine."""
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes", "winning_outcome_index": 0,
+            "open_time": 1000, "close_time": 6000, "resolved_at": 6000,
+        })
+
+        class LimitBuyer(Strategy):
+            def on_market_start(self, ctx, market, book):
+                ctx.buy_yes(size="50.0000", limit_price="0.6500")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        # TRADE_SELL: size=50, price=0.65
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(
+                SNAPSHOT_1, TRADE_SELL, SNAPSHOT_2)))
+
+        result = client.backtest(LimitBuyer(), "m1", after=1000, before=6000,
+                                 latency_ms=0, limit_fill_rate=0.5)
+        assert result.total_trades == 1
+        # TRADE_SELL size=50, fill_rate=0.5 → 25 shares filled
+        fill_size = Decimal(result.trades_df()["size"].iloc[0])
+        assert fill_size == Decimal("25.0000")

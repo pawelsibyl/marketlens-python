@@ -16,6 +16,7 @@ client = MarketLens()
 result = client.backtest(
     BuyOnTightSpread(),
     "9bc96c99-b036-50fd-85f7-bb4f5ae049e2",
+    latency_ms=100,
 )
 print(result)
 client.close()

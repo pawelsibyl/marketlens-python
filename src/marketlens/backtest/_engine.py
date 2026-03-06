@@ -35,6 +35,9 @@ class BacktestConfig:
     taker_only: bool = True
     max_fill_fraction: float = 1.0
     include_trades: bool = True
+    latency_ms: int = 50
+    slippage_bps: int = 0
+    limit_fill_rate: float = 0.1
 
 
 class _EngineCore:
@@ -51,11 +54,15 @@ class _EngineCore:
             fee_model,
             taker_only=self._config.taker_only,
             max_fill_fraction=self._config.max_fill_fraction,
+            slippage_bps=self._config.slippage_bps,
+            limit_fill_rate=self._config.limit_fill_rate,
         )
+        self._latency_ms = self._config.latency_ms
         self._portfolio = Portfolio(self._config.initial_cash)
         self._order_counter = 0
         self._orders: list[Order] = []
         self._open_orders: list[Order] = []
+        self._pending_orders: list[tuple[int, Order]] = []  # (activate_at, order)
         self._settlements: list[SettlementRecord] = []
         self._equity_curve: list[dict] = []
 
@@ -126,7 +133,10 @@ class _EngineCore:
         )
         self._orders.append(order)
 
-        if order_type == OrderType.MARKET:
+        if self._latency_ms > 0:
+            activate_at = self._current_time + self._latency_ms
+            self._pending_orders.append((activate_at, order))
+        elif order_type == OrderType.MARKET:
             self._fill_market_order(order)
         else:
             order.status = OrderStatus.OPEN
@@ -135,9 +145,10 @@ class _EngineCore:
         return order
 
     def cancel_order(self, order: Order) -> None:
-        if order.status == OrderStatus.OPEN:
+        if order.status in (OrderStatus.OPEN, OrderStatus.PENDING):
             order.status = OrderStatus.CANCELLED
             self._open_orders = [o for o in self._open_orders if o.id != order.id]
+            self._pending_orders = [(t, o) for t, o in self._pending_orders if o.id != order.id]
 
     def cancel_all_orders(self, *, market_id: str | None = None) -> None:
         remaining: list[Order] = []
@@ -149,6 +160,33 @@ class _EngineCore:
             else:
                 remaining.append(o)
         self._open_orders = remaining
+        remaining_pending: list[tuple[int, Order]] = []
+        for t, o in self._pending_orders:
+            if o.status == OrderStatus.PENDING and (
+                market_id is None or o.market_id == market_id
+            ):
+                o.status = OrderStatus.CANCELLED
+            else:
+                remaining_pending.append((t, o))
+        self._pending_orders = remaining_pending
+
+    def _activate_pending_orders(self) -> None:
+        """Activate orders whose latency delay has elapsed."""
+        still_pending: list[tuple[int, Order]] = []
+        for activate_at, order in self._pending_orders:
+            if self._current_time >= activate_at and order.status == OrderStatus.PENDING:
+                try:
+                    if order.order_type == OrderType.MARKET:
+                        self._fill_market_order(order)
+                    else:
+                        order.status = OrderStatus.OPEN
+                        self._open_orders.append(order)
+                except ValueError:
+                    # Position no longer sufficient (e.g. duplicate sell from latency)
+                    order.status = OrderStatus.CANCELLED
+            else:
+                still_pending.append((activate_at, order))
+        self._pending_orders = still_pending
 
     def _fill_market_order(self, order: Order) -> None:
         fill = self._fill_sim.try_fill_market_order(
@@ -180,6 +218,9 @@ class _EngineCore:
         return fills
 
     def _apply_fill(self, order: Order, fill: Fill) -> None:
+        # Apply to portfolio first — may raise ValueError for insufficient shares
+        self._portfolio.apply_fill(fill)
+
         order.fills.append(fill)
         filled = Decimal(order.filled_size) + Decimal(fill.size)
         order.filled_size = str(filled.quantize(_FOUR))
@@ -197,7 +238,6 @@ class _EngineCore:
         else:
             order.status = OrderStatus.PARTIALLY_FILLED
 
-        self._portfolio.apply_fill(fill)
         self._strategy.on_fill(self._ctx, self._current_market, fill)  # type: ignore[arg-type]
 
     def _expire_orders(self) -> None:
@@ -217,6 +257,8 @@ class _EngineCore:
         self._current_book = book
         self._current_time = event.t
         is_first = False
+
+        self._activate_pending_orders()
 
         if isinstance(event, TradeEvent):
             self._try_fill_limit_orders(event)

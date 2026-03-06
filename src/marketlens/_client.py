@@ -45,6 +45,9 @@ class MarketLens:
         initial_cash: str = "10000.0000",
         fee_rate_bps: int = 0,
         include_trades: bool = True,
+        latency_ms: int = 50,
+        slippage_bps: int = 0,
+        limit_fill_rate: float = 0.1,
         **params: Any,
     ) -> Any:
         """Run a backtest on a market or rolling series.
@@ -57,6 +60,9 @@ class MarketLens:
             initial_cash=initial_cash,
             fee_rate_bps=fee_rate_bps,
             include_trades=include_trades,
+            latency_ms=latency_ms,
+            slippage_bps=slippage_bps,
+            limit_fill_rate=limit_fill_rate,
         )
         engine = BacktestEngine(strategy, config)
         return engine.run(self, id, after=after, before=before, **params)
@@ -106,6 +112,9 @@ class AsyncMarketLens:
         initial_cash: str = "10000.0000",
         fee_rate_bps: int = 0,
         include_trades: bool = True,
+        latency_ms: int = 50,
+        slippage_bps: int = 0,
+        limit_fill_rate: float = 0.1,
         **params: Any,
     ) -> Any:
         """Run a backtest on a market or rolling series (async)."""
@@ -115,6 +124,9 @@ class AsyncMarketLens:
             initial_cash=initial_cash,
             fee_rate_bps=fee_rate_bps,
             include_trades=include_trades,
+            latency_ms=latency_ms,
+            slippage_bps=slippage_bps,
+            limit_fill_rate=limit_fill_rate,
         )
         engine = AsyncBacktestEngine(strategy, config)
         return await engine.run(self, id, after=after, before=before, **params)

@@ -22,10 +22,14 @@ class FillSimulator:
         *,
         taker_only: bool = True,
         max_fill_fraction: float = 1.0,
+        slippage_bps: int = 0,
+        limit_fill_rate: float = 1.0,
     ) -> None:
         self._fee_model = fee_model
         self._taker_only = taker_only
         self._max_fill_fraction = Decimal(str(max_fill_fraction))
+        self._slippage_bps = Decimal(str(slippage_bps))
+        self._limit_fill_rate = Decimal(str(limit_fill_rate))
 
     def try_fill_market_order(
         self, order: Order, book: OrderBook, timestamp: int,
@@ -64,6 +68,15 @@ class FillSimulator:
             fill_price = _ONE - yes_vwap
         else:
             fill_price = yes_vwap
+
+        # Apply slippage: worse price for the trader
+        if self._slippage_bps != _ZERO:
+            slip = fill_price * self._slippage_bps / Decimal("10000")
+            if order.side in (OrderSide.BUY_YES, OrderSide.BUY_NO):
+                fill_price += slip  # buys fill higher
+            else:
+                fill_price -= slip  # sells fill lower
+            fill_price = max(_ZERO, min(_ONE, fill_price))
 
         fill_price_str = str(fill_price.quantize(_FOUR))
         fill_size_str = str(total_filled.quantize(_FOUR))
@@ -113,7 +126,10 @@ class FillSimulator:
         if not triggered:
             return None
 
-        fill_size = min(remaining, trade_size)
+        available = trade_size * self._limit_fill_rate
+        fill_size = min(remaining, available).quantize(_FOUR)
+        if fill_size <= _ZERO:
+            return None
         fee = self._fee_model.calculate(limit_price, fill_size, is_maker=True)
 
         return Fill(

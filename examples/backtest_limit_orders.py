@@ -30,6 +30,7 @@ result = client.backtest(
     after=datetime(2026, 3, 5, 10, 0, tzinfo=timezone.utc),
     before=datetime(2026, 3, 5, 10, 3, tzinfo=timezone.utc),
     include_trades=True,
+    limit_fill_rate=0.2,
 )
 print(result)
 print()

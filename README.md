@@ -46,6 +46,64 @@ for market, book in client.orderbook.walk(
         # ...
 ```
 
+## Backtesting
+
+Define a strategy by subclassing `Strategy` and implementing event hooks. Run it against any market or rolling series — the engine replays L2 book data tick-by-tick with realistic execution simulation.
+
+```python
+from marketlens import MarketLens
+from marketlens.backtest import Strategy
+
+class BuyOnTightSpread(Strategy):
+    def on_book(self, ctx, market, book):
+        if ctx.position().side == "FLAT" and book.spread_bps() and book.spread_bps() < 200:
+            ctx.buy_yes(size="100")
+
+client = MarketLens()
+result = client.backtest(BuyOnTightSpread(), "btc-up-or-down-5m",
+                         after="2026-03-05T10:00Z", before="2026-03-05T10:05Z")
+print(result)
+result.trades_df()       # per-fill DataFrame
+result.settlements_df()  # per-market settlement P&L
+result.equity_df()       # equity curve over time
+```
+
+### Strategy hooks
+
+| Hook | Called when |
+|------|------------|
+| `on_book(ctx, market, book)` | Every book state change (snapshot or delta) |
+| `on_trade(ctx, market, book, trade)` | Every historical trade |
+| `on_fill(ctx, market, fill)` | Your order is filled |
+| `on_market_start(ctx, market, book)` | A new market begins in the walk |
+| `on_market_end(ctx, market)` | A market's data is exhausted, before settlement |
+
+### Execution realism
+
+The engine simulates realistic execution by default:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `latency_ms` | `50` | Order-to-fill delay — orders fill against the book state N ms after submission |
+| `limit_fill_rate` | `0.1` | Fraction of historical trade size that fills your limit order (queue position) |
+| `slippage_bps` | `0` | Extra price penalty on market order fills (on top of L2 book walk) |
+| `fee_rate_bps` | `0` | Polymarket taker fee rate (e.g. `200` for 2% crypto markets) |
+| `max_fill_fraction` | `1.0` | Max fraction of each book level consumed per order |
+| `include_trades` | `True` | Fetch trade data (required for limit order fills and `on_trade`) |
+
+```python
+# Conservative simulation
+result = client.backtest(strategy, "btc-up-or-down-5m",
+                         latency_ms=100, slippage_bps=5,
+                         limit_fill_rate=0.1, fee_rate_bps=200)
+
+# Optimistic (instant fills, no queue, no fees)
+result = client.backtest(strategy, "btc-up-or-down-5m",
+                         latency_ms=0, limit_fill_rate=1.0)
+```
+
+For full control, use `BacktestEngine` with `BacktestConfig` directly.
+
 ## Browse Series Events
 
 Non-rolling series (e.g. weekly strike groups) are browsed by event:
@@ -106,6 +164,9 @@ async with AsyncMarketLens() as client:
 
 | Example | Description |
 |---------|-------------|
+| [`backtest_basic.py`](examples/backtest_basic.py) | Buy YES on tight spread — minimal backtesting example |
+| [`backtest_imbalance.py`](examples/backtest_imbalance.py) | Imbalance signal with exit before settlement, fees and slippage |
+| [`backtest_limit_orders.py`](examples/backtest_limit_orders.py) | Market-making with limit orders and fill rate simulation |
 | [`single_market_replay.py`](examples/single_market_replay.py) | Replay a single market's order book tick by tick |
 | [`microstructure.py`](examples/microstructure.py) | Feature matrix from L2 replay — imbalance vs outcome signal |
 | [`series_backtest.py`](examples/series_backtest.py) | Spread-timing strategy with per-trade P&L across a rolling series |
