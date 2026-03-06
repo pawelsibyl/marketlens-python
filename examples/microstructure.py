@@ -12,9 +12,8 @@ client = MarketLens()
 
 df = client.orderbook.walk(
     "btc-up-or-down-5m",
-    status="resolved",
     after=datetime(2026, 3, 5, 8, 40, tzinfo=timezone.utc),
-    before=datetime(2026, 3, 5, 8, 45, tzinfo=timezone.utc),
+    before=datetime(2026, 3, 5, 8, 43, tzinfo=timezone.utc),
 ).to_dataframe()
 
 features = df.groupby("market_id").agg(

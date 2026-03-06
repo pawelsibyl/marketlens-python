@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from marketlens._base import AsyncHTTPClient, SyncHTTPClient
 from marketlens._constants import DEFAULT_BASE_URL, DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT
 from marketlens.resources.events import AsyncEvents, Events
@@ -32,6 +34,32 @@ class MarketLens:
         self.events = Events(self._http)
         self.series = SeriesResource(self._http)
         self.orderbook = Orderbook(self._http, series=self.series, markets=self.markets)
+
+    def backtest(
+        self,
+        strategy: Any,
+        id: str,
+        *,
+        after: Any = None,
+        before: Any = None,
+        initial_cash: str = "10000.0000",
+        fee_rate_bps: int = 0,
+        include_trades: bool = True,
+        **params: Any,
+    ) -> Any:
+        """Run a backtest on a market or rolling series.
+
+        Simple one-liner API. For advanced config, use ``BacktestEngine`` directly.
+        """
+        from marketlens.backtest import BacktestConfig, BacktestEngine
+
+        config = BacktestConfig(
+            initial_cash=initial_cash,
+            fee_rate_bps=fee_rate_bps,
+            include_trades=include_trades,
+        )
+        engine = BacktestEngine(strategy, config)
+        return engine.run(self, id, after=after, before=before, **params)
 
     def close(self) -> None:
         self._http.close()
@@ -67,6 +95,29 @@ class AsyncMarketLens:
         self.events = AsyncEvents(self._http)
         self.series = AsyncSeriesResource(self._http)
         self.orderbook = AsyncOrderbook(self._http, series=self.series, markets=self.markets)
+
+    async def backtest(
+        self,
+        strategy: Any,
+        id: str,
+        *,
+        after: Any = None,
+        before: Any = None,
+        initial_cash: str = "10000.0000",
+        fee_rate_bps: int = 0,
+        include_trades: bool = True,
+        **params: Any,
+    ) -> Any:
+        """Run a backtest on a market or rolling series (async)."""
+        from marketlens.backtest import AsyncBacktestEngine, BacktestConfig
+
+        config = BacktestConfig(
+            initial_cash=initial_cash,
+            fee_rate_bps=fee_rate_bps,
+            include_trades=include_trades,
+        )
+        engine = AsyncBacktestEngine(strategy, config)
+        return await engine.run(self, id, after=after, before=before, **params)
 
     async def close(self) -> None:
         await self._http.close()

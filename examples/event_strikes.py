@@ -1,10 +1,12 @@
 """Browse strike-level markets in a non-rolling series."""
 
+from itertools import islice
+
 from marketlens import MarketLens
 
 client = MarketLens()
 
-for event in client.series.events("ethereum-neg-risk-weekly"):
+for event in islice(client.series.events("ethereum-neg-risk-weekly"), 2):
     markets = client.events.markets(event.id).to_list()
     print(f"\n{event.title} ({len(markets)} strikes)")
     for m in markets:

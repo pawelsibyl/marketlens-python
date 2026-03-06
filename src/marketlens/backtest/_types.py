@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+from enum import Enum
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class OrderSide(str, Enum):
+    BUY_YES = "BUY_YES"
+    BUY_NO = "BUY_NO"
+    SELL_YES = "SELL_YES"
+    SELL_NO = "SELL_NO"
+
+
+class OrderType(str, Enum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+
+
+class OrderStatus(str, Enum):
+    PENDING = "PENDING"
+    OPEN = "OPEN"
+    FILLED = "FILLED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    CANCELLED = "CANCELLED"
+    EXPIRED = "EXPIRED"
+
+
+class PositionSide(str, Enum):
+    YES = "YES"
+    NO = "NO"
+    FLAT = "FLAT"
+
+
+class Fill(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    order_id: str
+    market_id: str
+    side: OrderSide
+    price: str
+    size: str
+    fee: str
+    timestamp: int
+    is_maker: bool
+
+
+class Order(BaseModel):
+    id: str
+    market_id: str
+    side: OrderSide
+    order_type: OrderType
+    size: str
+    limit_price: str | None = None
+    submitted_at: int
+    status: OrderStatus = OrderStatus.PENDING
+    filled_size: str = "0.0000"
+    avg_fill_price: str | None = None
+    total_fees: str = "0.0000"
+    fills: list[Fill] = Field(default_factory=list)
+    cancel_after: int | None = None
+
+
+class Position(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    market_id: str
+    side: PositionSide
+    shares: str
+    avg_entry_price: str
+    cost_basis: str
+    unrealized_pnl: str
+    realized_pnl: str
+    total_fees: str
+
+
+class SettlementRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    market_id: str
+    side: PositionSide
+    shares: str
+    avg_entry_price: str
+    settlement_price: str
+    pnl: str
+    fees: str
+    winning_outcome: str | None
+    resolved_at: int

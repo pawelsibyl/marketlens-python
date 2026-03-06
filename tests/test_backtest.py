@@ -1,0 +1,885 @@
+import httpx
+import pytest
+from decimal import Decimal
+
+from conftest import BASE_URL, SAMPLE_MARKET, SAMPLE_SERIES
+from marketlens import MarketLens, PriceLevel, SnapshotEvent, DeltaEvent, TradeEvent
+from marketlens.backtest import (
+    BacktestConfig,
+    BacktestEngine,
+    BacktestResult,
+    Fill,
+    FlatFeeModel,
+    Order,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    PolymarketFeeModel,
+    Position,
+    PositionSide,
+    SettlementRecord,
+    Strategy,
+    StrategyContext,
+    ZeroFeeModel,
+)
+from marketlens.backtest._fills import FillSimulator
+from marketlens.backtest._portfolio import Portfolio
+from marketlens.types.orderbook import OrderBook
+
+
+# ── Helpers ──────────────────────────────────────────────────────
+
+def _book(bids, asks, market_id="m1", as_of=1000):
+    """Build an OrderBook from (price, size) tuples."""
+    bid_levels = [PriceLevel(price=p, size=s) for p, s in bids]
+    ask_levels = [PriceLevel(price=p, size=s) for p, s in asks]
+    best_bid = bid_levels[0].price if bid_levels else None
+    best_ask = ask_levels[0].price if ask_levels else None
+    spread = None
+    midpoint = None
+    if best_bid and best_ask:
+        spread = str((Decimal(best_ask) - Decimal(best_bid)).quantize(Decimal("0.0001")))
+        midpoint = str(((Decimal(best_bid) + Decimal(best_ask)) / 2).quantize(Decimal("0.0001")))
+    bd = str(sum((Decimal(s) for _, s in bids), Decimal("0")).quantize(Decimal("0.0001")))
+    ad = str(sum((Decimal(s) for _, s in asks), Decimal("0")).quantize(Decimal("0.0001")))
+    return OrderBook(
+        market_id=market_id, platform="polymarket", as_of=as_of,
+        bids=bid_levels, asks=ask_levels,
+        best_bid=best_bid, best_ask=best_ask,
+        spread=spread, midpoint=midpoint,
+        bid_depth=bd, ask_depth=ad,
+        bid_levels=len(bid_levels), ask_levels=len(ask_levels),
+    )
+
+
+def _market_with(overrides):
+    return {**SAMPLE_MARKET, **overrides}
+
+
+def _history_response(*events):
+    return {"data": list(events), "meta": {"cursor": None, "has_more": False}}
+
+
+SNAPSHOT_1 = {
+    "type": "snapshot", "t": 1000, "is_reseed": False,
+    "bids": [{"price": "0.6500", "size": "200.0000"}, {"price": "0.6400", "size": "150.0000"}],
+    "asks": [{"price": "0.6700", "size": "100.0000"}, {"price": "0.6800", "size": "250.0000"}],
+}
+DELTA_1 = {"type": "delta", "t": 1500, "price": "0.6500", "size": "350.0000", "side": "BUY"}
+TRADE_SELL = {"type": "trade", "t": 2000, "id": "t1", "price": "0.6500", "size": "50.0000", "side": "SELL"}
+TRADE_BUY = {"type": "trade", "t": 2500, "id": "t2", "price": "0.6700", "size": "80.0000", "side": "BUY"}
+SNAPSHOT_2 = {
+    "type": "snapshot", "t": 5000, "is_reseed": False,
+    "bids": [{"price": "0.6600", "size": "180.0000"}],
+    "asks": [{"price": "0.6800", "size": "300.0000"}],
+}
+
+
+# ── Fee Model Tests ──────────────────────────────────────────────
+
+class TestFeeModels:
+    def test_polymarket_fee_at_midpoint(self):
+        fm = PolymarketFeeModel(rate_bps=200)
+        # price=0.50 → max fee region: 0.50 * 0.50 * 0.02 = 0.005 per share
+        fee = fm.calculate(Decimal("0.5000"), Decimal("100"), is_maker=False)
+        assert fee == Decimal("0.5000")
+
+    def test_polymarket_fee_at_extreme(self):
+        fm = PolymarketFeeModel(rate_bps=200)
+        # price=0.99 → 0.99 * 0.01 * 0.02 = 0.000198 per share
+        fee = fm.calculate(Decimal("0.9900"), Decimal("100"), is_maker=False)
+        assert fee == Decimal("0.0198")
+
+    def test_polymarket_maker_zero(self):
+        fm = PolymarketFeeModel(rate_bps=200)
+        fee = fm.calculate(Decimal("0.5000"), Decimal("100"), is_maker=True)
+        assert fee == Decimal("0")
+
+    def test_polymarket_zero_rate(self):
+        fm = PolymarketFeeModel(rate_bps=0)
+        fee = fm.calculate(Decimal("0.5000"), Decimal("100"), is_maker=False)
+        assert fee == Decimal("0")
+
+    def test_zero_fee_model(self):
+        fm = ZeroFeeModel()
+        fee = fm.calculate(Decimal("0.5"), Decimal("1000"), is_maker=False)
+        assert fee == Decimal("0")
+
+    def test_flat_fee_model(self):
+        fm = FlatFeeModel(Decimal("0.01"))
+        fee = fm.calculate(Decimal("0.5"), Decimal("100"), is_maker=False)
+        assert fee == Decimal("1.0000")
+
+
+# ── Fill Simulator Tests ─────────────────────────────────────────
+
+class TestFillSimulatorMarket:
+    def _sim(self, **kwargs):
+        return FillSimulator(ZeroFeeModel(), **kwargs)
+
+    def _order(self, side, size, market_id="m1"):
+        return Order(
+            id="ord-1", market_id=market_id, side=side,
+            order_type=OrderType.MARKET, size=size, submitted_at=1000,
+        )
+
+    def test_buy_yes_walks_asks(self):
+        book = _book(
+            [("0.6500", "200.0000")],
+            [("0.6700", "100.0000"), ("0.6800", "250.0000")],
+        )
+        order = self._order(OrderSide.BUY_YES, "150.0000")
+        fill = self._sim().try_fill_market_order(order, book, 1000)
+        assert fill is not None
+        assert fill.size == "150.0000"
+        # VWAP: (100*0.67 + 50*0.68) / 150 = (67 + 34) / 150 = 0.6733...
+        expected = (Decimal("100") * Decimal("0.67") + Decimal("50") * Decimal("0.68")) / Decimal("150")
+        assert fill.price == str(expected.quantize(Decimal("0.0001")))
+
+    def test_sell_yes_walks_bids(self):
+        book = _book(
+            [("0.6500", "200.0000"), ("0.6400", "150.0000")],
+            [("0.6700", "100.0000")],
+        )
+        order = self._order(OrderSide.SELL_YES, "100.0000")
+        fill = self._sim().try_fill_market_order(order, book, 1000)
+        assert fill is not None
+        assert fill.price == "0.6500"
+        assert fill.size == "100.0000"
+
+    def test_buy_no_walks_bids_inverts(self):
+        book = _book(
+            [("0.6500", "200.0000")],
+            [("0.6700", "100.0000")],
+        )
+        order = self._order(OrderSide.BUY_NO, "100.0000")
+        fill = self._sim().try_fill_market_order(order, book, 1000)
+        assert fill is not None
+        # YES VWAP from bids = 0.65, NO price = 1 - 0.65 = 0.35
+        assert fill.price == "0.3500"
+        assert fill.size == "100.0000"
+
+    def test_sell_no_walks_asks_inverts(self):
+        book = _book(
+            [("0.6500", "200.0000")],
+            [("0.6700", "100.0000")],
+        )
+        order = self._order(OrderSide.SELL_NO, "50.0000")
+        fill = self._sim().try_fill_market_order(order, book, 1000)
+        assert fill is not None
+        # YES VWAP from asks = 0.67, NO price = 1 - 0.67 = 0.33
+        assert fill.price == "0.3300"
+
+    def test_empty_book_returns_none(self):
+        book = _book([], [])
+        order = self._order(OrderSide.BUY_YES, "100.0000")
+        fill = self._sim().try_fill_market_order(order, book, 1000)
+        assert fill is None
+
+    def test_partial_fill(self):
+        book = _book([], [("0.7000", "30.0000")])
+        order = self._order(OrderSide.BUY_YES, "100.0000")
+        fill = self._sim().try_fill_market_order(order, book, 1000)
+        assert fill is not None
+        assert fill.size == "30.0000"
+
+    def test_max_fill_fraction(self):
+        book = _book([], [("0.7000", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "100.0000")
+        fill = self._sim(max_fill_fraction=0.5).try_fill_market_order(order, book, 1000)
+        assert fill is not None
+        assert fill.size == "50.0000"
+
+
+class TestFillSimulatorLimit:
+    def _sim(self):
+        return FillSimulator(ZeroFeeModel())
+
+    def _order(self, side, size, limit_price, market_id="m1"):
+        return Order(
+            id="ord-1", market_id=market_id, side=side,
+            order_type=OrderType.LIMIT, size=size, limit_price=limit_price,
+            submitted_at=1000, status=OrderStatus.OPEN,
+        )
+
+    def _trade(self, side, price, size="50.0000"):
+        return TradeEvent(type="trade", t=2000, id="t1", price=price, size=size, side=side)
+
+    def test_buy_yes_fills_on_sell_trade_at_limit(self):
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        trade = self._trade("SELL", "0.6500")
+        fill = self._sim().try_fill_limit_order(order, book, trade, 2000)
+        assert fill is not None
+        assert fill.price == "0.6500"
+        assert fill.size == "50.0000"
+        assert fill.is_maker is True
+
+    def test_buy_yes_no_fill_on_buy_trade(self):
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        trade = self._trade("BUY", "0.6700")
+        fill = self._sim().try_fill_limit_order(order, book, trade, 2000)
+        assert fill is None
+
+    def test_buy_yes_no_fill_above_limit(self):
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6400")
+        trade = self._trade("SELL", "0.6500")
+        fill = self._sim().try_fill_limit_order(order, book, trade, 2000)
+        assert fill is None
+
+    def test_sell_yes_fills_on_buy_trade(self):
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.SELL_YES, "50.0000", "0.6700")
+        trade = self._trade("BUY", "0.6700")
+        fill = self._sim().try_fill_limit_order(order, book, trade, 2000)
+        assert fill is not None
+        assert fill.price == "0.6700"
+
+    def test_buy_no_fills_on_buy_trade(self):
+        # BUY_NO at q=0.35 → YES threshold = 1 - 0.35 = 0.65
+        # Fills when BUY trade price >= 0.65
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_NO, "50.0000", "0.3500")
+        trade = self._trade("BUY", "0.6700")
+        fill = self._sim().try_fill_limit_order(order, book, trade, 2000)
+        assert fill is not None
+        assert fill.price == "0.3500"
+
+    def test_sell_no_fills_on_sell_trade(self):
+        # SELL_NO at q=0.35 → YES threshold = 1 - 0.35 = 0.65
+        # Fills when SELL trade price <= 0.65
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.SELL_NO, "50.0000", "0.3500")
+        trade = self._trade("SELL", "0.6500")
+        fill = self._sim().try_fill_limit_order(order, book, trade, 2000)
+        assert fill is not None
+        assert fill.price == "0.3500"
+
+    def test_fill_size_capped_by_trade(self):
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "200.0000", "0.6500")
+        trade = self._trade("SELL", "0.6500", size="30.0000")
+        fill = self._sim().try_fill_limit_order(order, book, trade, 2000)
+        assert fill is not None
+        assert fill.size == "30.0000"
+
+    def test_no_fill_without_trade(self):
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        fill = self._sim().try_fill_limit_order(order, book, None, 2000)
+        assert fill is None
+
+
+# ── Portfolio Tests ──────────────────────────────────────────────
+
+class TestPortfolio:
+    def test_initial_state(self):
+        p = Portfolio("10000.0000")
+        assert p.cash == "10000.0000"
+        assert p.equity == "10000.0000"
+        pos = p.position("m1")
+        assert pos.side == PositionSide.FLAT
+        assert pos.shares == "0.0000"
+
+    def test_buy_yes_updates_cash_and_position(self):
+        p = Portfolio("10000.0000")
+        fill = Fill(
+            order_id="o1", market_id="m1", side=OrderSide.BUY_YES,
+            price="0.6500", size="100.0000", fee="0.0000", timestamp=1000, is_maker=False,
+        )
+        p.apply_fill(fill)
+        assert p.cash == "9935.0000"  # 10000 - 65
+        pos = p.position("m1")
+        assert pos.side == PositionSide.YES
+        assert pos.shares == "100.0000"
+        assert pos.avg_entry_price == "0.6500"
+
+    def test_sell_yes_realizes_pnl(self):
+        p = Portfolio("10000.0000")
+        p.apply_fill(Fill(
+            order_id="o1", market_id="m1", side=OrderSide.BUY_YES,
+            price="0.6500", size="100.0000", fee="0.0000", timestamp=1000, is_maker=False,
+        ))
+        p.apply_fill(Fill(
+            order_id="o2", market_id="m1", side=OrderSide.SELL_YES,
+            price="0.7000", size="100.0000", fee="0.0000", timestamp=2000, is_maker=False,
+        ))
+        # cash: 10000 - 65 + 70 = 10005
+        assert p.cash == "10005.0000"
+        pos = p.position("m1")
+        assert pos.side == PositionSide.FLAT
+        assert pos.realized_pnl == "5.0000"
+
+    def test_buy_no_updates_position(self):
+        p = Portfolio("10000.0000")
+        fill = Fill(
+            order_id="o1", market_id="m1", side=OrderSide.BUY_NO,
+            price="0.3500", size="100.0000", fee="0.0000", timestamp=1000, is_maker=False,
+        )
+        p.apply_fill(fill)
+        assert p.cash == "9965.0000"  # 10000 - 35
+        pos = p.position("m1")
+        assert pos.side == PositionSide.NO
+        assert pos.shares == "100.0000"
+        assert pos.avg_entry_price == "0.3500"
+
+    def test_fees_deducted(self):
+        p = Portfolio("10000.0000")
+        fill = Fill(
+            order_id="o1", market_id="m1", side=OrderSide.BUY_YES,
+            price="0.6500", size="100.0000", fee="0.5000", timestamp=1000, is_maker=False,
+        )
+        p.apply_fill(fill)
+        assert p.cash == "9934.5000"  # 10000 - 65 - 0.5
+        assert p.total_fees == "0.5000"
+
+    def test_settle_yes_win(self):
+        from marketlens.types.market import Market
+        p = Portfolio("10000.0000")
+        p.apply_fill(Fill(
+            order_id="o1", market_id="m1", side=OrderSide.BUY_YES,
+            price="0.6500", size="100.0000", fee="0.0000", timestamp=1000, is_maker=False,
+        ))
+        market = Market.model_validate(_market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes", "winning_outcome_index": 0,
+            "resolved_at": 5000,
+        }))
+        record = p.settle_market(market, 5000)
+        assert record is not None
+        assert record.settlement_price == "1.0000"
+        assert record.pnl == "35.0000"  # (1.0 - 0.65) * 100
+        # Cash: 9935 + 100 = 10035
+        assert p.cash == "10035.0000"
+
+    def test_settle_yes_loss(self):
+        from marketlens.types.market import Market
+        p = Portfolio("10000.0000")
+        p.apply_fill(Fill(
+            order_id="o1", market_id="m1", side=OrderSide.BUY_YES,
+            price="0.6500", size="100.0000", fee="0.0000", timestamp=1000, is_maker=False,
+        ))
+        market = Market.model_validate(_market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "No", "winning_outcome_index": 1,
+            "resolved_at": 5000,
+        }))
+        record = p.settle_market(market, 5000)
+        assert record is not None
+        assert record.settlement_price == "0.0000"
+        assert record.pnl == "-65.0000"
+        assert p.cash == "9935.0000"  # unchanged from after buy
+
+    def test_settle_no_win(self):
+        from marketlens.types.market import Market
+        p = Portfolio("10000.0000")
+        p.apply_fill(Fill(
+            order_id="o1", market_id="m1", side=OrderSide.BUY_NO,
+            price="0.3500", size="100.0000", fee="0.0000", timestamp=1000, is_maker=False,
+        ))
+        market = Market.model_validate(_market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "No", "winning_outcome_index": 1,
+            "resolved_at": 5000,
+        }))
+        record = p.settle_market(market, 5000)
+        assert record is not None
+        assert record.settlement_price == "1.0000"
+        assert record.pnl == "65.0000"
+        assert p.cash == "10065.0000"  # 9965 + 100
+
+    def test_settle_flat_returns_none(self):
+        from marketlens.types.market import Market
+        p = Portfolio("10000.0000")
+        market = Market.model_validate(_market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes", "winning_outcome_index": 0,
+            "resolved_at": 5000,
+        }))
+        assert p.settle_market(market, 5000) is None
+
+    def test_mark_to_market(self):
+        p = Portfolio("10000.0000")
+        p.apply_fill(Fill(
+            order_id="o1", market_id="m1", side=OrderSide.BUY_YES,
+            price="0.6500", size="100.0000", fee="0.0000", timestamp=1000, is_maker=False,
+        ))
+        book = _book([("0.7000", "200.0000")], [("0.7200", "100.0000")])
+        p.mark_to_market("m1", book)
+        pos = p.position("m1")
+        assert pos.unrealized_pnl == "5.0000"  # (0.70 - 0.65) * 100
+
+    def test_can_sell(self):
+        p = Portfolio("10000.0000")
+        p.apply_fill(Fill(
+            order_id="o1", market_id="m1", side=OrderSide.BUY_YES,
+            price="0.6500", size="100.0000", fee="0.0000", timestamp=1000, is_maker=False,
+        ))
+        assert p.can_sell("m1", OrderSide.SELL_YES, Decimal("100")) is True
+        assert p.can_sell("m1", OrderSide.SELL_YES, Decimal("101")) is False
+        assert p.can_sell("m1", OrderSide.SELL_NO, Decimal("1")) is False
+
+
+# ── Strategy Context Tests ───────────────────────────────────────
+
+class TestStrategyContext:
+    def test_buy_yes_creates_correct_order(self, mock_api, client):
+        """ctx.buy_yes() should submit a BUY_YES market order."""
+        m1 = _market_with({"id": "m1", "status": "resolved",
+                           "winning_outcome": "Yes", "winning_outcome_index": 0,
+                           "open_time": 1000, "close_time": 6000, "resolved_at": 6000})
+
+        class BuyOnce(Strategy):
+            def on_book(self, ctx, market, book):
+                if ctx.position().side == "FLAT":
+                    order = ctx.buy_yes(size="100.0000")
+                    assert order.side == OrderSide.BUY_YES
+                    assert order.order_type == OrderType.MARKET
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+        result = client.backtest(BuyOnce(), "m1", after=1000, before=6000)
+        assert result.total_trades == 1
+
+    def test_sell_validation_raises(self, mock_api, client):
+        """Selling more than held should raise ValueError."""
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
+
+        class SellWithoutHolding(Strategy):
+            def on_book(self, ctx, market, book):
+                ctx.sell_yes(size="100.0000")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+        with pytest.raises(ValueError, match="Cannot sell"):
+            client.backtest(SellWithoutHolding(), "m1", after=1000, before=6000)
+
+    def test_limit_price_validation(self, mock_api, client):
+        """Limit price outside (0, 1) should raise ValueError."""
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
+
+        class BadLimit(Strategy):
+            def on_book(self, ctx, market, book):
+                ctx.buy_yes(size="100.0000", limit_price="1.5000")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+        with pytest.raises(ValueError, match="Limit price must be in"):
+            client.backtest(BadLimit(), "m1", after=1000, before=6000)
+
+    def test_cancel_order(self, mock_api, client):
+        """Cancelling a limit order should set status to CANCELLED."""
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
+        cancelled = []
+
+        class PlaceAndCancel(Strategy):
+            def on_book(self, ctx, market, book):
+                if not ctx.open_orders and not cancelled:
+                    order = ctx.buy_yes(size="100.0000", limit_price="0.6000")
+                    ctx.cancel(order)
+                    cancelled.append(order)
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+        client.backtest(PlaceAndCancel(), "m1", after=1000, before=6000)
+        assert cancelled[0].status == OrderStatus.CANCELLED
+
+
+# ── Engine Integration Tests ─────────────────────────────────────
+
+class TestEngineIntegration:
+    def test_buy_and_settle_yes_win(self, mock_api, client):
+        """Buy YES on first book, market resolves YES → positive P&L."""
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes", "winning_outcome_index": 0,
+            "open_time": 1000, "close_time": 6000, "resolved_at": 6000,
+        })
+
+        class BuyFirst(Strategy):
+            def on_book(self, ctx, market, book):
+                if ctx.position().side == "FLAT":
+                    ctx.buy_yes(size="100.0000")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+
+        result = client.backtest(BuyFirst(), "m1", after=1000, before=6000)
+        assert result.total_trades == 1
+        assert Decimal(result.total_pnl) > 0
+        assert len(result.settlements_df()) == 1
+        assert result.settlements_df()["pnl"].iloc[0] > 0
+
+    def test_buy_and_settle_yes_loss(self, mock_api, client):
+        """Buy YES, market resolves NO → negative P&L."""
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "No", "winning_outcome_index": 1,
+            "open_time": 1000, "close_time": 6000, "resolved_at": 6000,
+        })
+
+        class BuyFirst(Strategy):
+            def on_book(self, ctx, market, book):
+                if ctx.position().side == "FLAT":
+                    ctx.buy_yes(size="100.0000")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+
+        result = client.backtest(BuyFirst(), "m1", after=1000, before=6000)
+        assert Decimal(result.total_pnl) < 0
+
+    def test_sell_before_settlement(self, mock_api, client):
+        """Buy then sell before settlement → realized P&L from trade, not settlement."""
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes", "winning_outcome_index": 0,
+            "open_time": 1000, "close_time": 6000, "resolved_at": 6000,
+        })
+
+        class BuyAndSell(Strategy):
+            def __init__(self):
+                self._bought = False
+
+            def on_book(self, ctx, market, book):
+                if not self._bought:
+                    ctx.buy_yes(size="100.0000")
+                    self._bought = True
+                elif ctx.position().side != "FLAT":
+                    ctx.sell_yes(size="100.0000")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1, DELTA_1, SNAPSHOT_2)))
+
+        result = client.backtest(BuyAndSell(), "m1", after=1000, before=6000)
+        assert result.total_trades == 2
+        # No settlement since position is flat
+        assert len(result.settlements_df()) == 0
+
+    def test_limit_order_fills_on_trade(self, mock_api, client):
+        """Limit BUY_YES fills when a matching SELL trade occurs."""
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes", "winning_outcome_index": 0,
+            "open_time": 1000, "close_time": 6000, "resolved_at": 6000,
+        })
+
+        class LimitBuyer(Strategy):
+            def on_market_start(self, ctx, market, book):
+                ctx.buy_yes(size="50.0000", limit_price="0.6500")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(
+                SNAPSHOT_1, TRADE_SELL, SNAPSHOT_2)))
+
+        result = client.backtest(LimitBuyer(), "m1", after=1000, before=6000)
+        # TRADE_SELL is side=SELL at price 0.65, should trigger BUY_YES limit at 0.65
+        assert result.total_trades == 1
+
+    def test_limit_order_no_fill_wrong_side(self, mock_api, client):
+        """Limit BUY_YES should NOT fill on a BUY trade."""
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes", "winning_outcome_index": 0,
+            "open_time": 1000, "close_time": 6000, "resolved_at": 6000,
+        })
+
+        class LimitBuyer(Strategy):
+            def on_market_start(self, ctx, market, book):
+                ctx.buy_yes(size="50.0000", limit_price="0.6500")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(
+                SNAPSHOT_1, TRADE_BUY, SNAPSHOT_2)))
+
+        result = client.backtest(LimitBuyer(), "m1", after=1000, before=6000)
+        assert result.total_trades == 0
+
+    def test_multi_market_series(self, mock_api, client):
+        """Backtest across a rolling series with multiple markets."""
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes", "winning_outcome_index": 0,
+            "open_time": 1000, "close_time": 3000, "resolved_at": 3000,
+        })
+        m2 = _market_with({
+            "id": "m2", "status": "resolved",
+            "winning_outcome": "No", "winning_outcome_index": 1,
+            "open_time": 3000, "close_time": 6000, "resolved_at": 6000,
+        })
+
+        class BuyEveryMarket(Strategy):
+            def on_book(self, ctx, market, book):
+                if ctx.position().side == "FLAT":
+                    ctx.buy_yes(size="100.0000")
+
+        # Market ID 404, fall back to series
+        mock_api.get("/markets/btc-daily").mock(
+            return_value=httpx.Response(404, json={
+                "error": {"code": "MARKET_NOT_FOUND", "message": "Not found"},
+            }))
+        mock_api.get("/series/btc-daily").mock(
+            return_value=httpx.Response(200, json=SAMPLE_SERIES))
+        mock_api.get("/series/btc-daily/markets").mock(
+            return_value=httpx.Response(200, json={
+                "data": [m1, m2], "meta": {"cursor": None, "has_more": False},
+            }))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+        mock_api.get("/markets/m2/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_2)))
+
+        result = client.backtest(
+            BuyEveryMarket(), "btc-daily", status="resolved",
+        )
+        assert result.markets_traded == 2
+        assert len(result.settlements_df()) == 2
+
+    def test_on_market_lifecycle(self, mock_api, client):
+        """on_market_start and on_market_end are called correctly."""
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
+        calls = []
+
+        class LifecycleTracker(Strategy):
+            def on_market_start(self, ctx, market, book):
+                calls.append("start")
+
+            def on_book(self, ctx, market, book):
+                calls.append("book")
+
+            def on_market_end(self, ctx, market):
+                calls.append("end")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1, DELTA_1)))
+
+        client.backtest(LifecycleTracker(), "m1", after=1000, before=6000)
+        assert calls == ["start", "book", "book", "end"]
+
+    def test_on_trade_called(self, mock_api, client):
+        """on_trade is called with trade events."""
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
+        trades_seen = []
+
+        class TradeTracker(Strategy):
+            def on_trade(self, ctx, market, book, trade):
+                trades_seen.append(trade)
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(
+                SNAPSHOT_1, TRADE_SELL, TRADE_BUY)))
+
+        client.backtest(TradeTracker(), "m1", after=1000, before=6000)
+        assert len(trades_seen) == 2
+        assert trades_seen[0].side == "SELL"
+        assert trades_seen[1].side == "BUY"
+
+    def test_on_fill_called(self, mock_api, client):
+        """on_fill is called when an order fills."""
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
+        fills_seen = []
+
+        class FillTracker(Strategy):
+            def on_book(self, ctx, market, book):
+                if ctx.position().side == "FLAT":
+                    ctx.buy_yes(size="50.0000")
+
+            def on_fill(self, ctx, market, fill):
+                fills_seen.append(fill)
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+
+        client.backtest(FillTracker(), "m1", after=1000, before=6000)
+        assert len(fills_seen) == 1
+        assert fills_seen[0].side == OrderSide.BUY_YES
+
+    def test_cancel_after_expires_order(self, mock_api, client):
+        """Orders with cancel_after should be expired when time passes."""
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
+
+        class ExpireTest(Strategy):
+            def on_market_start(self, ctx, market, book):
+                ctx.buy_yes(size="50.0000", limit_price="0.6000", cancel_after=1200)
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1, DELTA_1)))
+
+        result = client.backtest(ExpireTest(), "m1", after=1000, before=6000)
+        # DELTA_1 is at t=1500 > cancel_after=1200, so order should expire
+        assert result.total_trades == 0
+        orders = result.orders_df()
+        assert orders["status"].iloc[0] == "EXPIRED"
+
+    def test_empty_book_market_order_cancelled(self, mock_api, client):
+        """Market order against empty book should be cancelled."""
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
+        empty_snapshot = {
+            "type": "snapshot", "t": 1000, "is_reseed": False,
+            "bids": [], "asks": [],
+        }
+
+        class BuyEmpty(Strategy):
+            def on_book(self, ctx, market, book):
+                if ctx.position().side == "FLAT":
+                    ctx.buy_yes(size="100.0000")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(empty_snapshot)))
+
+        result = client.backtest(BuyEmpty(), "m1", after=1000, before=6000)
+        assert result.total_trades == 0
+        assert result.orders_df()["status"].iloc[0] == "CANCELLED"
+
+    def test_buy_no_strategy(self, mock_api, client):
+        """BUY_NO should create a NO position and settle correctly."""
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "No", "winning_outcome_index": 1,
+            "open_time": 1000, "close_time": 6000, "resolved_at": 6000,
+        })
+
+        class BuyNo(Strategy):
+            def on_book(self, ctx, market, book):
+                if ctx.position().side == "FLAT":
+                    ctx.buy_no(size="100.0000")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+
+        result = client.backtest(BuyNo(), "m1", after=1000, before=6000)
+        assert result.total_trades == 1
+        settlements = result.settlements_df()
+        assert len(settlements) == 1
+        assert settlements["side"].iloc[0] == "NO"
+        assert settlements["pnl"].iloc[0] > 0  # NO wins
+
+    def test_custom_initial_cash(self, mock_api, client):
+        """Custom initial_cash should be respected."""
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
+
+        class Noop(Strategy):
+            pass
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+
+        result = client.backtest(Noop(), "m1", after=1000, before=6000, initial_cash="50000.0000")
+        assert result.total_pnl == "0.0000"
+        assert result.total_return == 0.0
+
+
+# ── Results Tests ────────────────────────────────────────────────
+
+class TestBacktestResult:
+    def _run_simple(self, mock_api, client, winning_index=0):
+        m1 = _market_with({
+            "id": "m1", "status": "resolved",
+            "winning_outcome": "Yes" if winning_index == 0 else "No",
+            "winning_outcome_index": winning_index,
+            "open_time": 1000, "close_time": 6000, "resolved_at": 6000,
+        })
+
+        class BuyFirst(Strategy):
+            def on_book(self, ctx, market, book):
+                if ctx.position().side == "FLAT":
+                    ctx.buy_yes(size="100.0000")
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+        return client.backtest(BuyFirst(), "m1", after=1000, before=6000)
+
+    def test_summary_keys(self, mock_api, client):
+        result = self._run_simple(mock_api, client)
+        s = result.summary()
+        expected_keys = {
+            "total_pnl", "total_return", "win_rate", "profit_factor",
+            "max_drawdown", "sharpe_ratio", "total_trades", "markets_traded",
+            "total_fees", "fee_drag_bps", "avg_entry_price",
+        }
+        assert set(s.keys()) == expected_keys
+
+    def test_repr(self, mock_api, client):
+        result = self._run_simple(mock_api, client)
+        r = repr(result)
+        assert "BacktestResult(" in r
+        assert "total_pnl" in r
+
+    def test_trades_df_columns(self, mock_api, client):
+        result = self._run_simple(mock_api, client)
+        df = result.trades_df()
+        assert len(df) == 1
+        assert set(df.columns) >= {"market_id", "side", "price", "size", "fee", "is_maker"}
+
+    def test_orders_df_columns(self, mock_api, client):
+        result = self._run_simple(mock_api, client)
+        df = result.orders_df()
+        assert len(df) == 1
+        assert "status" in df.columns
+
+    def test_settlements_df_columns(self, mock_api, client):
+        result = self._run_simple(mock_api, client)
+        df = result.settlements_df()
+        assert len(df) == 1
+        expected = {"market_id", "side", "shares", "avg_entry_price",
+                    "settlement_price", "pnl", "fees", "winning_outcome", "resolved_at"}
+        assert set(df.columns) >= expected
+
+    def test_equity_df(self, mock_api, client):
+        result = self._run_simple(mock_api, client)
+        df = result.equity_df()
+        assert len(df) >= 1
+        assert "cash" in df.columns
+        assert "equity" in df.columns
+
+    def test_to_dataframe_alias(self, mock_api, client):
+        result = self._run_simple(mock_api, client)
+        df1 = result.to_dataframe()
+        df2 = result.settlements_df()
+        assert df1.equals(df2)
+
+    def test_win_rate(self, mock_api, client):
+        result = self._run_simple(mock_api, client, winning_index=0)
+        assert result.win_rate == 1.0
+
+    def test_loss_gives_zero_win_rate(self, mock_api, client):
+        result = self._run_simple(mock_api, client, winning_index=1)
+        assert result.win_rate == 0.0
+
+    def test_no_trades_result(self, mock_api, client):
+        m1 = _market_with({"id": "m1", "open_time": 1000, "close_time": 6000})
+
+        class Noop(Strategy):
+            pass
+
+        mock_api.get("/markets/m1").mock(return_value=httpx.Response(200, json=m1))
+        mock_api.get("/markets/m1/orderbook/history").mock(
+            return_value=httpx.Response(200, json=_history_response(SNAPSHOT_1)))
+
+        result = client.backtest(Noop(), "m1", after=1000, before=6000)
+        assert result.total_trades == 0
+        assert result.win_rate == 0.0
+        assert result.profit_factor == 0.0
+        assert result.max_drawdown == 0.0
+        assert result.sharpe_ratio is None
+        assert result.trades_df().empty
+        assert result.settlements_df().empty

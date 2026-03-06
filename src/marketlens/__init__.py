@@ -13,6 +13,7 @@ from marketlens.exceptions import (
     RateLimitError,
     TimeoutError,
 )
+from marketlens.backtest import BacktestConfig, BacktestEngine, BacktestResult, Strategy
 from marketlens.helpers.walk import AsyncOrderBookWalk, OrderBookWalk
 from marketlens.types import (
     BookMetrics,
@@ -39,6 +40,11 @@ __all__ = [
     # Clients
     "MarketLens",
     "AsyncMarketLens",
+    # Backtest
+    "Strategy",
+    "BacktestEngine",
+    "BacktestConfig",
+    "BacktestResult",
     # Types
     "Market",
     "Outcome",

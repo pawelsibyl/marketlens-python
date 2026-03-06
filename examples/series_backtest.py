@@ -14,9 +14,8 @@ current_id, entered = None, False
 
 for market, book in client.orderbook.walk(
     "btc-up-or-down-5m",
-    status="resolved",
     after=datetime(2026, 3, 5, 8, 40, tzinfo=timezone.utc),
-    before=datetime(2026, 3, 5, 8, 45, tzinfo=timezone.utc),
+    before=datetime(2026, 3, 5, 8, 43, tzinfo=timezone.utc),
 ):
     if market.id != current_id:
         current_id, entered = market.id, False
