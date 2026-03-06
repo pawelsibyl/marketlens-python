@@ -14,15 +14,39 @@ class FeeModel(ABC):
 
 
 class PolymarketFeeModel(FeeModel):
-    """``fee_per_share = price * (1 - price) * rate``; taker only (maker = 0)."""
+    """Polymarket fees: ``fee = shares * p * fee_rate * (p*(1-p))^exponent``.
 
-    def __init__(self, rate_bps: int = 0) -> None:
-        self._rate = Decimal(rate_bps) / Decimal(10_000)
+    Taker only (maker = 0).  Use :meth:`crypto` / :meth:`sports` presets
+    or :meth:`for_category` to auto-detect from a market's category.
+    """
+
+    def __init__(self, fee_rate: Decimal, exponent: int = 1) -> None:
+        self._fee_rate = fee_rate
+        self._exponent = exponent
+
+    @classmethod
+    def crypto(cls) -> PolymarketFeeModel:
+        """Crypto markets: fee_rate=0.25, exponent=2. Max ~1.56% at p=0.50."""
+        return cls(Decimal("0.25"), exponent=2)
+
+    @classmethod
+    def sports(cls) -> PolymarketFeeModel:
+        """Sports markets (NCAAB, Serie A): fee_rate=0.0175, exponent=1. Max ~0.44% at p=0.50."""
+        return cls(Decimal("0.0175"), exponent=1)
+
+    @classmethod
+    def for_category(cls, category: str | None) -> FeeModel:
+        """Return the correct fee model for a Polymarket market category."""
+        if category and category.lower() == "crypto":
+            return cls.crypto()
+        return ZeroFeeModel()
 
     def calculate(self, price: Decimal, size: Decimal, is_maker: bool) -> Decimal:
         if is_maker:
             return _ZERO
-        fee_per_share = price * (_ONE - price) * self._rate
+        fee_per_share = (
+            price * self._fee_rate * (price * (_ONE - price)) ** self._exponent
+        )
         return (fee_per_share * size).quantize(_FOUR)
 
 

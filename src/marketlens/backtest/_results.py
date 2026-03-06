@@ -17,12 +17,14 @@ class BacktestResult:
         orders: list[Order],
         settlements: list[SettlementRecord],
         equity_curve: list[dict],
+        cash_rejected: int = 0,
     ) -> None:
         self._portfolio = portfolio
         self._orders = orders
         self._settlements = settlements
         self._equity_curve = equity_curve
         self._fills = [f for o in orders for f in o.fills]
+        self.cash_rejected = cash_rejected
 
         initial = Decimal(portfolio.initial_cash)
         final_equity = Decimal(portfolio.equity)
@@ -41,13 +43,14 @@ class BacktestResult:
             else 0.0
         )
 
-        # Win rate & profit factor
-        wins = [s for s in settlements if Decimal(s.pnl) > 0]
-        losses = [s for s in settlements if Decimal(s.pnl) < 0]
-        self.win_rate = len(wins) / len(settlements) if settlements else 0.0
+        # Win rate & profit factor (net of fees)
+        net_pnls = [(s, Decimal(s.pnl) - Decimal(s.fees)) for s in settlements]
+        wins = [n for _, n in net_pnls if n > 0]
+        losses = [n for _, n in net_pnls if n < 0]
+        self.win_rate = len(wins) / len(net_pnls) if net_pnls else 0.0
 
-        gross_profit = sum(Decimal(s.pnl) for s in wins)
-        gross_loss = abs(sum(Decimal(s.pnl) for s in losses))
+        gross_profit = sum(wins)
+        gross_loss = abs(sum(losses))
         if gross_loss > 0:
             self.profit_factor = float(gross_profit / gross_loss)
         elif gross_profit > 0:
@@ -62,7 +65,7 @@ class BacktestResult:
             for s in settlements:
                 cb = Decimal(s.avg_entry_price) * Decimal(s.shares)
                 if cb > 0:
-                    returns.append(float(Decimal(s.pnl) / cb))
+                    returns.append(float((Decimal(s.pnl) - Decimal(s.fees)) / cb))
             if len(returns) >= 2:
                 mean_r = sum(returns) / len(returns)
                 var_r = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
@@ -95,7 +98,7 @@ class BacktestResult:
             self.avg_entry_price = "0.0000"
 
     def summary(self) -> dict[str, Any]:
-        return {
+        s: dict[str, Any] = {
             "total_pnl": self.total_pnl,
             "total_return": f"{self.total_return:.2%}",
             "win_rate": f"{self.win_rate:.2%}",
@@ -110,6 +113,9 @@ class BacktestResult:
             "fee_drag_bps": f"{self.fee_drag_bps:.1f}",
             "avg_entry_price": self.avg_entry_price,
         }
+        if self.cash_rejected > 0:
+            s["cash_rejected"] = self.cash_rejected
+        return s
 
     def __repr__(self) -> str:
         s = self.summary()

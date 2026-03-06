@@ -29,6 +29,7 @@ result = client.backtest(
     "btc-up-or-down-5m",
     after=datetime(2026, 3, 5, 10, 0, tzinfo=timezone.utc),
     before=datetime(2026, 3, 5, 10, 3, tzinfo=timezone.utc),
+    initial_cash="10000.0000",
     include_trades=True,
     limit_fill_rate=0.2,
 )

@@ -42,8 +42,8 @@ class MarketLens:
         *,
         after: Any = None,
         before: Any = None,
-        initial_cash: str = "10000.0000",
-        fee_rate_bps: int = 0,
+        initial_cash: str,
+        fees: str | None = "polymarket",
         include_trades: bool = True,
         latency_ms: int = 50,
         slippage_bps: int = 0,
@@ -58,7 +58,7 @@ class MarketLens:
 
         config = BacktestConfig(
             initial_cash=initial_cash,
-            fee_rate_bps=fee_rate_bps,
+            fees=fees,
             include_trades=include_trades,
             latency_ms=latency_ms,
             slippage_bps=slippage_bps,
@@ -109,8 +109,8 @@ class AsyncMarketLens:
         *,
         after: Any = None,
         before: Any = None,
-        initial_cash: str = "10000.0000",
-        fee_rate_bps: int = 0,
+        initial_cash: str,
+        fees: str | None = "polymarket",
         include_trades: bool = True,
         latency_ms: int = 50,
         slippage_bps: int = 0,
@@ -122,7 +122,7 @@ class AsyncMarketLens:
 
         config = BacktestConfig(
             initial_cash=initial_cash,
-            fee_rate_bps=fee_rate_bps,
+            fees=fees,
             include_trades=include_trades,
             latency_ms=latency_ms,
             slippage_bps=slippage_bps,

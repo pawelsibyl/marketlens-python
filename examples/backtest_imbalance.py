@@ -42,7 +42,8 @@ result = client.backtest(
     "btc-up-or-down-5m",
     after=datetime(2026, 3, 5, 10, 0, tzinfo=timezone.utc),
     before=datetime(2026, 3, 5, 10, 3, tzinfo=timezone.utc),
-    fee_rate_bps=200,
+    initial_cash="10000.0000",
+    fees="polymarket",
     slippage_bps=5,
 )
 print(result)

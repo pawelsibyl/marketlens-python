@@ -117,7 +117,7 @@ class Portfolio:
     def equity(self) -> str:
         total = self._cash
         for pos in self._positions.values():
-            total += pos.unrealized_pnl
+            total += pos.cost_basis + pos.unrealized_pnl
         return str(total.quantize(_FOUR))
 
     def _get_or_create(self, market_id: str) -> _MutablePosition:

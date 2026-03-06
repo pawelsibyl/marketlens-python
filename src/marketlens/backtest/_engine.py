@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from marketlens.exceptions import NotFoundError
-from marketlens.backtest._fees import FeeModel, PolymarketFeeModel
+from marketlens.backtest._fees import FeeModel, PolymarketFeeModel, ZeroFeeModel
 from marketlens.backtest._fills import FillSimulator
 from marketlens.backtest._portfolio import Portfolio
 from marketlens.backtest._results import BacktestResult
@@ -31,7 +31,7 @@ _FOUR = Decimal("0.0001")
 class BacktestConfig:
     initial_cash: str = "10000.0000"
     fee_model: FeeModel | None = None
-    fee_rate_bps: int = 0
+    fees: str | None = "polymarket"
     taker_only: bool = True
     max_fill_fraction: float = 1.0
     include_trades: bool = True
@@ -47,9 +47,8 @@ class _EngineCore:
         self._strategy = strategy
         self._config = config or BacktestConfig()
 
-        fee_model = self._config.fee_model or PolymarketFeeModel(
-            rate_bps=self._config.fee_rate_bps,
-        )
+        self._auto_fees = self._config.fees == "polymarket"
+        fee_model = self._config.fee_model or ZeroFeeModel()
         self._fill_sim = FillSimulator(
             fee_model,
             taker_only=self._config.taker_only,
@@ -65,6 +64,7 @@ class _EngineCore:
         self._pending_orders: list[tuple[int, Order]] = []  # (activate_at, order)
         self._settlements: list[SettlementRecord] = []
         self._equity_curve: list[dict] = []
+        self._cash_rejected = 0
 
         self._current_market: Market | None = None
         self._current_book: OrderBook | None = None
@@ -195,7 +195,10 @@ class _EngineCore:
         if fill is None:
             order.status = OrderStatus.CANCELLED
             return
-        self._apply_fill(order, fill)
+        try:
+            self._apply_fill(order, fill)
+        except ValueError:
+            order.status = OrderStatus.CANCELLED
 
     def _try_fill_limit_orders(self, trade: TradeEvent) -> list[Fill]:
         fills: list[Fill] = []
@@ -218,7 +221,13 @@ class _EngineCore:
         return fills
 
     def _apply_fill(self, order: Order, fill: Fill) -> None:
-        # Apply to portfolio first — may raise ValueError for insufficient shares
+        # Check cash sufficiency for buy orders
+        if fill.side in (OrderSide.BUY_YES, OrderSide.BUY_NO):
+            cost = Decimal(fill.price) * Decimal(fill.size) + Decimal(fill.fee)
+            if self._portfolio._cash < cost:
+                self._cash_rejected += 1
+                raise ValueError("Insufficient cash")
+        # Apply to portfolio — may also raise ValueError for insufficient shares
         self._portfolio.apply_fill(fill)
 
         order.fills.append(fill)
@@ -298,6 +307,7 @@ class _EngineCore:
             orders=self._orders,
             settlements=self._settlements,
             equity_curve=self._equity_curve,
+            cash_rejected=self._cash_rejected,
         )
         
 
@@ -331,6 +341,8 @@ class BacktestEngine(_EngineCore):
         self, client: Any, market: Market, *, after: Any = None, before: Any = None,
     ) -> None:
         self._current_market = market
+        if self._auto_fees:
+            self._fill_sim._fee_model = PolymarketFeeModel.for_category(market.category)
         history_params: dict[str, Any] = {}
         if self._config.include_trades:
             history_params["include_trades"] = True
@@ -384,6 +396,8 @@ class AsyncBacktestEngine(_EngineCore):
         self, client: Any, market: Market, *, after: Any = None, before: Any = None,
     ) -> None:
         self._current_market = market
+        if self._auto_fees:
+            self._fill_sim._fee_model = PolymarketFeeModel.for_category(market.category)
         history_params: dict[str, Any] = {}
         if self._config.include_trades:
             history_params["include_trades"] = True
