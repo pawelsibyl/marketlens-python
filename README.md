@@ -61,6 +61,7 @@ class BuyOnTightSpread(Strategy):
 
 client = MarketLens()
 result = client.backtest(BuyOnTightSpread(), "btc-up-or-down-5m",
+                         initial_cash="10000.0000",
                          after="2026-03-05T10:00Z", before="2026-03-05T10:05Z")
 print(result)
 result.trades_df()       # per-fill DataFrame
@@ -84,22 +85,25 @@ The engine simulates realistic execution by default:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
+| `initial_cash` | *required* | Starting capital (e.g. `"10000.0000"`) — buy orders exceeding cash are cancelled |
 | `latency_ms` | `50` | Order-to-fill delay — orders fill against the book state N ms after submission |
 | `limit_fill_rate` | `0.1` | Fraction of historical trade size that fills your limit order (queue position) |
 | `slippage_bps` | `0` | Extra price penalty on market order fills (on top of L2 book walk) |
-| `fee_rate_bps` | `0` | Polymarket taker fee rate (e.g. `200` for 2% crypto markets) |
+| `fees` | `"polymarket"` | Fee model — auto-detects per category (crypto vs sports). Set to `None` for zero fees |
 | `max_fill_fraction` | `1.0` | Max fraction of each book level consumed per order |
 | `include_trades` | `True` | Fetch trade data (required for limit order fills and `on_trade`) |
 
 ```python
 # Conservative simulation
 result = client.backtest(strategy, "btc-up-or-down-5m",
+                         initial_cash="10000.0000",
                          latency_ms=100, slippage_bps=5,
-                         limit_fill_rate=0.1, fee_rate_bps=200)
+                         limit_fill_rate=0.1)
 
 # Optimistic (instant fills, no queue, no fees)
 result = client.backtest(strategy, "btc-up-or-down-5m",
-                         latency_ms=0, limit_fill_rate=1.0)
+                         initial_cash="10000.0000",
+                         latency_ms=0, limit_fill_rate=1.0, fees=None)
 ```
 
 For full control, use `BacktestEngine` with `BacktestConfig` directly.
