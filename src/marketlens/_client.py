@@ -8,6 +8,7 @@ from marketlens.resources.events import AsyncEvents, Events
 from marketlens.resources.markets import AsyncMarkets, Markets
 from marketlens.resources.orderbook import AsyncOrderbook, Orderbook
 from marketlens.resources.series import AsyncSeriesResource, SeriesResource
+from marketlens.resources.signals import AsyncSignals, Signals
 
 
 class MarketLens:
@@ -34,6 +35,7 @@ class MarketLens:
         self.events = Events(self._http)
         self.series = SeriesResource(self._http)
         self.orderbook = Orderbook(self._http, series=self.series, markets=self.markets)
+        self.signals = Signals(self._http)
 
     def backtest(
         self,
@@ -101,6 +103,7 @@ class AsyncMarketLens:
         self.events = AsyncEvents(self._http)
         self.series = AsyncSeriesResource(self._http)
         self.orderbook = AsyncOrderbook(self._http, series=self.series, markets=self.markets)
+        self.signals = AsyncSignals(self._http)
 
     async def backtest(
         self,

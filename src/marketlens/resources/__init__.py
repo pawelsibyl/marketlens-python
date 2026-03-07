@@ -2,6 +2,7 @@ from marketlens.resources.markets import Markets, AsyncMarkets
 from marketlens.resources.events import Events, AsyncEvents
 from marketlens.resources.series import SeriesResource, AsyncSeriesResource
 from marketlens.resources.orderbook import Orderbook, AsyncOrderbook
+from marketlens.resources.signals import Signals, AsyncSignals
 
 __all__ = [
     "Markets",
@@ -12,4 +13,6 @@ __all__ = [
     "AsyncSeriesResource",
     "Orderbook",
     "AsyncOrderbook",
+    "Signals",
+    "AsyncSignals",
 ]
