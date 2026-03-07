@@ -209,6 +209,7 @@ class BacktestResult:
         df["t"] = pd.to_datetime(df["t"], unit="ms", utc=True)
         df["cash"] = df["cash"].astype(float)
         df["equity"] = df["equity"].astype(float)
+        df["pnl"] = df["pnl"].astype(float)
         return df.set_index("t")
 
     def to_dataframe(self):

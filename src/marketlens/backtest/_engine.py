@@ -294,11 +294,14 @@ class _EngineCore:
         self._portfolio.mark_to_market(market.id, book)
 
         if isinstance(event, SnapshotEvent):
+            equity = self._portfolio.equity
+            pnl = str((Decimal(equity) - Decimal(self._portfolio.initial_cash)).quantize(_FOUR))
             self._equity_curve.append({
                 "t": event.t,
                 "market_id": market.id,
                 "cash": self._portfolio.cash,
-                "equity": self._portfolio.equity,
+                "equity": equity,
+                "pnl": pnl,
             })
 
         return is_first
