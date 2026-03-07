@@ -108,6 +108,37 @@ result = client.backtest(strategy, "btc-up-or-down-5m",
 
 For full control, use `BacktestEngine` with `BacktestConfig` directly.
 
+## Implied Probability Surfaces
+
+Implied distributions extracted from multi-strike prediction markets — survival curves, density functions, and barrier probabilities, fitted via isotonic regression. Updated every 5 minutes.
+
+```python
+for surface in client.signals.surfaces(underlying="BTC"):
+    print(f"{surface.series_title}  [{surface.surface_type}]")
+    print(f"  mean={surface.implied_mean}  cv={surface.implied_cv}%  skew={surface.implied_skew}")
+
+    if surface.surface_type == "survival":
+        for s in surface.survival_strikes():
+            print(f"  K={s.strike:>10,.0f}  P(above)={s.fitted_prob:.3f}")
+
+    elif surface.surface_type == "density":
+        for b in surface.density_buckets():
+            lo = f"${b.lower:,.0f}" if b.lower else "<tail"
+            hi = f"${b.upper:,.0f}" if b.upper else "tail>"
+            print(f"  {lo}-{hi}  p={b.normalized_prob:.3f}")
+
+# Historical surface snapshots
+df = client.signals.history("btc-multi-strikes-weekly", event_id).to_dataframe()
+```
+
+Three surface types are available:
+
+| Type | Source | Fitting | Output |
+|------|--------|---------|--------|
+| `survival` | Multi-strike "above $X" markets | PAVA monotone decreasing | `survival_strikes()` |
+| `density` | Neg-risk range + tail markets | Normalized probabilities | `density_buckets()` |
+| `barrier` | Hit-price reach/dip markets | PAVA per direction | `barrier_strikes()` |
+
 ## Browse Series Events
 
 Non-rolling series (e.g. weekly strike groups) are browsed by event:
@@ -143,6 +174,7 @@ book.depth_within("0.02")      # (bid_depth, ask_depth) within 2c of mid
 | `client.events` | `list()` `get()` `markets()` |
 | `client.series` | `list()` `get()` `markets()` `walk()` `events()` |
 | `client.orderbook` | `get()` `history()` `metrics()` `walk()` |
+| `client.signals` | `surfaces()` `surface()` `history()` |
 
 All list methods return auto-paginating iterators with `.to_list()` and `.to_dataframe()`.
 
@@ -176,6 +208,7 @@ async with AsyncMarketLens() as client:
 | [`series_backtest.py`](examples/series_backtest.py) | Spread-timing strategy with per-trade P&L across a rolling series |
 | [`event_strikes.py`](examples/event_strikes.py) | Browse strike-level markets in a non-rolling series |
 | [`execution_cost.py`](examples/execution_cost.py) | Live book depth, spread, impact/slippage across order sizes |
+| [`implied_surfaces.py`](examples/implied_surfaces.py) | Implied probability surfaces — survival, density, barrier |
 
 ## License
 
