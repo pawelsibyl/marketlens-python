@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import AsyncIterable, AsyncIterator, Iterable, Iterator, Union
+from typing import AsyncIterable, AsyncIterator, Iterable, Iterator
 
-from marketlens.types.history import DeltaEvent, SnapshotEvent, TradeEvent
+from marketlens.types.history import DeltaEvent, HistoryEvent, SnapshotEvent, TradeEvent
 from marketlens.types.orderbook import OrderBook, PriceLevel
-
-HistoryEvent = Union[SnapshotEvent, DeltaEvent, TradeEvent]
 
 FOUR = Decimal("0.0001")
 ZERO = Decimal("0")

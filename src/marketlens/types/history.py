@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Union
 
 from pydantic import BaseModel, ConfigDict
 
@@ -36,3 +36,6 @@ class TradeEvent(BaseModel):
     price: str
     size: str
     side: str
+
+
+HistoryEvent = Union[SnapshotEvent, DeltaEvent, TradeEvent]

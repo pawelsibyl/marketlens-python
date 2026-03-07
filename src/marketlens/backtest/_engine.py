@@ -19,6 +19,7 @@ from marketlens.backtest._types import (
     PositionSide,
     SettlementRecord,
 )
+from marketlens.helpers.merge import async_merge_replays, merge_replays
 from marketlens.helpers.replay import AsyncOrderBookReplay, OrderBookReplay
 from marketlens.types.history import DeltaEvent, SnapshotEvent, TradeEvent
 from marketlens.types.market import Market
@@ -69,6 +70,8 @@ class _EngineCore:
         self._current_market: Market | None = None
         self._current_book: OrderBook | None = None
         self._current_time: int = 0
+        self._current_event: Any = None
+        self._event_books: dict[str, OrderBook] = {}
 
         self._ctx = StrategyContext(self)
 
@@ -170,11 +173,19 @@ class _EngineCore:
                 remaining_pending.append((t, o))
         self._pending_orders = remaining_pending
 
-    def _activate_pending_orders(self) -> None:
-        """Activate orders whose latency delay has elapsed."""
+    def _activate_pending_orders(self, *, market_id: str | None = None) -> None:
+        """Activate orders whose latency delay has elapsed.
+
+        When *market_id* is given, only orders for that market are considered.
+        This prevents cross-market fills in event (multi-market) mode.
+        """
         still_pending: list[tuple[int, Order]] = []
         for activate_at, order in self._pending_orders:
-            if self._current_time >= activate_at and order.status == OrderStatus.PENDING:
+            if (
+                self._current_time >= activate_at
+                and order.status == OrderStatus.PENDING
+                and (market_id is None or order.market_id == market_id)
+            ):
                 try:
                     if order.order_type == OrderType.MARKET:
                         self._fill_market_order(order)
@@ -263,11 +274,12 @@ class _EngineCore:
 
     def _process_event(self, event: SnapshotEvent | DeltaEvent | TradeEvent, book: OrderBook, market: Market, first_book_seen: bool) -> bool:
         """Process a single event. Returns True if this was the first book event."""
+        self._current_market = market
         self._current_book = book
         self._current_time = event.t
         is_first = False
 
-        self._activate_pending_orders()
+        self._activate_pending_orders(market_id=market.id)
 
         if isinstance(event, TradeEvent):
             self._try_fill_limit_orders(event)
@@ -322,20 +334,50 @@ class BacktestEngine(_EngineCore):
         before: Any = None,
         **params: Any,
     ) -> BacktestResult:
+        # 1. Try as a market UUID
         try:
             market = client.markets.get(id)
-            markets = [market]
-            is_single = True
+            self._run_single_market(client, market, after=after, before=before)
+            return self._build_result()
         except NotFoundError:
-            markets = list(client.series.walk(id, after=after, before=before, **params))
-            is_single = False
+            pass
 
-        for market in markets:
-            h_after = after if is_single else None
-            h_before = before if is_single else None
-            self._run_single_market(client, market, after=h_after, before=h_before)
+        # 2. Try as a series
+        try:
+            series = client.series.get(id)
+        except NotFoundError:
+            series = None
 
-        return self._build_result()
+        if series is not None:
+            if series.structured_type:
+                event_params = dict(params)
+                if after is not None:
+                    event_params["end_after"] = after
+                if before is not None:
+                    event_params["start_before"] = before
+                events = client.series.events(id, **event_params).to_list()
+                for evt in events:
+                    event_markets = client.events.markets(evt.id).to_list()
+                    self._run_event_markets(
+                        client, evt, event_markets, after=after, before=before,
+                    )
+            elif series.is_rolling:
+                markets = list(client.series.walk(id, after=after, before=before, **params))
+                for market in markets:
+                    self._run_single_market(client, market)
+            else:
+                raise ValueError(
+                    f"Series '{series.title}' is neither rolling nor structured."
+                )
+            return self._build_result()
+
+        # 3. Fallback: condition ID
+        found = client.markets.list(condition_id=id).to_list()
+        if found:
+            self._run_single_market(client, found[0], after=after, before=before)
+            return self._build_result()
+
+        raise NotFoundError(404, "NOT_FOUND", f"No market or series found for '{id}'")
 
     def _run_single_market(
         self, client: Any, market: Market, *, after: Any = None, before: Any = None,
@@ -364,6 +406,46 @@ class BacktestEngine(_EngineCore):
 
         self._finalize_market(market)
 
+    def _run_event_markets(
+        self, client: Any, evt: Any, event_markets: list[Market],
+        *, after: Any = None, before: Any = None,
+    ) -> None:
+        self._current_event = evt
+        self._event_books = {}
+        self._strategy.on_event_start(self._ctx, evt, event_markets)
+
+        history_params: dict[str, Any] = {}
+        if self._config.include_trades:
+            history_params["include_trades"] = True
+
+        replays: list[tuple[Market, OrderBookReplay]] = []
+        for m in event_markets:
+            history = client.orderbook.history(
+                m.id,
+                after=after or m.open_time,
+                before=before or m.close_time,
+                **history_params,
+            )
+            replays.append((m, OrderBookReplay(history, market_id=m.id, platform=m.platform)))
+
+        first_book_seen: set[str] = set()
+        for market, event, book in merge_replays(replays):
+            if self._auto_fees:
+                self._fill_sim._fee_model = PolymarketFeeModel.for_category(market.category)
+            self._event_books[market.id] = book
+            seen = market.id in first_book_seen
+            if self._process_event(event, book, market, seen):
+                first_book_seen.add(market.id)
+            elif not seen and isinstance(event, (SnapshotEvent, DeltaEvent)):
+                first_book_seen.add(market.id)
+
+        for m in event_markets:
+            self._finalize_market(m)
+
+        self._strategy.on_event_end(self._ctx, evt)
+        self._current_event = None
+        self._event_books = {}
+
 
 class AsyncBacktestEngine(_EngineCore):
     async def run(
@@ -375,22 +457,52 @@ class AsyncBacktestEngine(_EngineCore):
         before: Any = None,
         **params: Any,
     ) -> BacktestResult:
+        # 1. Try as a market UUID
         try:
             market = await client.markets.get(id)
-            markets = [market]
-            is_single = True
+            await self._run_single_market(client, market, after=after, before=before)
+            return self._build_result()
         except NotFoundError:
-            markets = []
-            async for m in client.series.walk(id, after=after, before=before, **params):
-                markets.append(m)
-            is_single = False
+            pass
 
-        for market in markets:
-            h_after = after if is_single else None
-            h_before = before if is_single else None
-            await self._run_single_market(client, market, after=h_after, before=h_before)
+        # 2. Try as a series
+        try:
+            series = await client.series.get(id)
+        except NotFoundError:
+            series = None
 
-        return self._build_result()
+        if series is not None:
+            if series.structured_type:
+                event_params = dict(params)
+                if after is not None:
+                    event_params["end_after"] = after
+                if before is not None:
+                    event_params["start_before"] = before
+                events = await (await client.series.events(id, **event_params)).to_list()
+                for evt in events:
+                    event_markets = await client.events.markets(evt.id).to_list()
+                    await self._run_event_markets(
+                        client, evt, event_markets, after=after, before=before,
+                    )
+            elif series.is_rolling:
+                markets = []
+                async for m in client.series.walk(id, after=after, before=before, **params):
+                    markets.append(m)
+                for market in markets:
+                    await self._run_single_market(client, market)
+            else:
+                raise ValueError(
+                    f"Series '{series.title}' is neither rolling nor structured."
+                )
+            return self._build_result()
+
+        # 3. Fallback: condition ID
+        found = await client.markets.list(condition_id=id).to_list()
+        if found:
+            await self._run_single_market(client, found[0], after=after, before=before)
+            return self._build_result()
+
+        raise NotFoundError(404, "NOT_FOUND", f"No market or series found for '{id}'")
 
     async def _run_single_market(
         self, client: Any, market: Market, *, after: Any = None, before: Any = None,
@@ -420,3 +532,45 @@ class AsyncBacktestEngine(_EngineCore):
                 first_book_seen = True
 
         self._finalize_market(market)
+
+    async def _run_event_markets(
+        self, client: Any, evt: Any, event_markets: list[Market],
+        *, after: Any = None, before: Any = None,
+    ) -> None:
+        self._current_event = evt
+        self._event_books = {}
+        self._strategy.on_event_start(self._ctx, evt, event_markets)
+
+        history_params: dict[str, Any] = {}
+        if self._config.include_trades:
+            history_params["include_trades"] = True
+
+        replays: list[tuple[Market, AsyncOrderBookReplay]] = []
+        for m in event_markets:
+            history = client.orderbook.history(
+                m.id,
+                after=after or m.open_time,
+                before=before or m.close_time,
+                **history_params,
+            )
+            replays.append((
+                m, AsyncOrderBookReplay(history, market_id=m.id, platform=m.platform),
+            ))
+
+        first_book_seen: set[str] = set()
+        async for market, event, book in async_merge_replays(replays):
+            if self._auto_fees:
+                self._fill_sim._fee_model = PolymarketFeeModel.for_category(market.category)
+            self._event_books[market.id] = book
+            seen = market.id in first_book_seen
+            if self._process_event(event, book, market, seen):
+                first_book_seen.add(market.id)
+            elif not seen and isinstance(event, (SnapshotEvent, DeltaEvent)):
+                first_book_seen.add(market.id)
+
+        for m in event_markets:
+            self._finalize_market(m)
+
+        self._strategy.on_event_end(self._ctx, evt)
+        self._current_event = None
+        self._event_books = {}

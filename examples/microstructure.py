@@ -1,7 +1,7 @@
-"""Microstructure feature matrix from L2 replay.
+"""Microstructure feature matrix — does order book imbalance predict outcome?
 
-Uses orderbook.walk() with a rolling series slug to build a
-feature matrix across all resolved markets in the series.
+Walks a rolling series, builds a per-market feature matrix from L2 replay,
+and checks whether imbalance direction correlates with the winning outcome.
 """
 
 from datetime import datetime, timezone
@@ -11,9 +11,9 @@ from marketlens import MarketLens
 client = MarketLens()
 
 df = client.orderbook.walk(
-    "btc-up-or-down-5m",
-    after=datetime(2026, 3, 5, 8, 40, tzinfo=timezone.utc),
-    before=datetime(2026, 3, 5, 8, 43, tzinfo=timezone.utc),
+    "eth-up-or-down-15m",
+    after=datetime(2026, 3, 5, 8, 0, tzinfo=timezone.utc),
+    before=datetime(2026, 3, 5, 10, 0, tzinfo=timezone.utc),
 ).to_dataframe()
 
 features = df.groupby("market_id").agg(
@@ -23,7 +23,6 @@ features = df.groupby("market_id").agg(
     mid_start=("midpoint", "first"),
     mid_end=("midpoint", "last"),
 )
-features["return"] = features["mid_end"] / features["mid_start"] - 1
 features["won_up"] = features["outcome"] == "Up"
 
 bullish = features[features["imbalance"] > 0]["won_up"].mean()

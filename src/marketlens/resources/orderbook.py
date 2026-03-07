@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, Union
+from typing import Any
 
 from pydantic import TypeAdapter
 
 from marketlens._base import AsyncHTTPClient, SyncHTTPClient
 from marketlens.exceptions import NotFoundError
 from marketlens._pagination import AsyncPageIterator, SyncPageIterator
-from marketlens.types.history import DeltaEvent, SnapshotEvent, TradeEvent
+from marketlens.types.history import DeltaEvent, HistoryEvent, SnapshotEvent, TradeEvent
 from marketlens.types.orderbook import BookMetrics, OrderBook
-
-HistoryEvent = Union[SnapshotEvent, DeltaEvent, TradeEvent]
 
 _HISTORY_EVENT_ADAPTER = TypeAdapter(HistoryEvent)
 
@@ -48,10 +46,14 @@ class _HistoryAsyncPageIterator(AsyncPageIterator[HistoryEvent]):
 
 
 class Orderbook:
-    def __init__(self, client: SyncHTTPClient, *, series: Any = None, markets: Any = None) -> None:
+    def __init__(
+        self, client: SyncHTTPClient, *,
+        series: Any = None, markets: Any = None, events: Any = None,
+    ) -> None:
         self._client = client
         self._series = series
         self._markets = markets
+        self._events = events
 
     def get(self, market_id: str, *, at: Any = None, depth: int | None = None) -> OrderBook:
         params: dict[str, Any] = {}
@@ -84,44 +86,90 @@ class Orderbook:
     def walk(
         self, id: str, *, after: Any = None, before: Any = None, **params: Any,
     ):
-        """Replay L2 books for a single market or across a rolling series.
+        """Replay L2 books for a market, rolling series, or structured product.
 
-        Accepts either a market ID or a rolling series ID/slug. When a market
-        ID is given, replays that single market's book within the ``after``/
-        ``before`` window. When a series is given, iterates all matching
-        markets chronologically.
-
-        Returns an :class:`~marketlens.helpers.walk.OrderBookWalk` that yields
-        ``(Market, OrderBook)`` tuples and supports ``.to_dataframe()``.
-
-        For non-rolling series, use :meth:`~marketlens.resources.series.SeriesResource.events`
-        to browse events and their strike-level markets.
+        Accepts a market UUID, series slug, or Polymarket condition ID.
+        Returns an iterable of ``(Market, OrderBook)`` tuples with live
+        ``.books``, ``.event``, ``.series``, and ``.markets`` properties.
 
         Args:
-            id: Market ID or series identifier / platform slug.
+            id: Market UUID, series identifier / platform slug, or condition ID.
             after: Start time (market: book history window; series: close_time filter).
             before: End time (market: book history window; series: close_time filter).
             **params: Extra filter params (e.g. ``status``, ``platform``).
         """
-        from marketlens.helpers.walk import OrderBookWalk
+        from marketlens.helpers.walk import EventOrderBookWalk, OrderBookWalk
 
-        # Try as a market ID first
+        # 1. Try as a market UUID
         try:
             market = self._markets.get(id)
-            return OrderBookWalk([market], self, after=after, before=before)
+            series = None
+            if market.series_id and self._series:
+                try:
+                    series = self._series.get(market.series_id)
+                except Exception:
+                    pass
+            return OrderBookWalk(
+                [market], self, after=after, before=before,
+                series=series, events_resource=self._events,
+            )
         except NotFoundError:
             pass
 
-        # Fall back to series
-        markets = list(self._series.walk(id, after=after, before=before, **params))
-        return OrderBookWalk(markets, self)
+        # 2. Try as a series slug
+        try:
+            series = self._series.get(id)
+            if series.structured_type:
+                event_params = dict(params)
+                if after is not None:
+                    event_params["end_after"] = after
+                if before is not None:
+                    event_params["start_before"] = before
+                events = self._series.events(id, **event_params).to_list()
+                return EventOrderBookWalk(
+                    events, self._events, self, series,
+                    after=after, before=before,
+                )
+            elif series.is_rolling:
+                markets = list(self._series.walk(id, after=after, before=before, **params))
+                return OrderBookWalk(
+                    markets, self, series=series, events_resource=self._events,
+                )
+            else:
+                raise ValueError(
+                    f"Series '{series.title}' is neither rolling nor structured. "
+                    f"Use a market ID to walk individual markets."
+                )
+        except NotFoundError:
+            pass
+
+        # 3. Fallback: try as a condition ID
+        found = self._markets.list(condition_id=id).to_list()
+        if found:
+            market = found[0]
+            series = None
+            if market.series_id and self._series:
+                try:
+                    series = self._series.get(market.series_id)
+                except Exception:
+                    pass
+            return OrderBookWalk(
+                [market], self, after=after, before=before,
+                series=series, events_resource=self._events,
+            )
+
+        raise NotFoundError(404, "NOT_FOUND", f"No market or series found for '{id}'")
 
 
 class AsyncOrderbook:
-    def __init__(self, client: AsyncHTTPClient, *, series: Any = None, markets: Any = None) -> None:
+    def __init__(
+        self, client: AsyncHTTPClient, *,
+        series: Any = None, markets: Any = None, events: Any = None,
+    ) -> None:
         self._client = client
         self._series = series
         self._markets = markets
+        self._events = events
 
     async def get(self, market_id: str, *, at: Any = None, depth: int | None = None) -> OrderBook:
         params: dict[str, Any] = {}
@@ -155,17 +203,66 @@ class AsyncOrderbook:
         self, id: str, *, after: Any = None, before: Any = None, **params: Any,
     ):
         """Async version of :meth:`Orderbook.walk`."""
-        from marketlens.helpers.walk import AsyncOrderBookWalk
+        from marketlens.helpers.walk import AsyncEventOrderBookWalk, AsyncOrderBookWalk
 
-        # Try as a market ID first
+        # 1. Try as a market UUID
         try:
             market = await self._markets.get(id)
-            return AsyncOrderBookWalk([market], self, after=after, before=before)
+            series = None
+            if market.series_id and self._series:
+                try:
+                    series = await self._series.get(market.series_id)
+                except Exception:
+                    pass
+            return AsyncOrderBookWalk(
+                [market], self, after=after, before=before,
+                series=series, events_resource=self._events,
+            )
         except NotFoundError:
             pass
 
-        # Fall back to series
-        markets = []
-        async for market in self._series.walk(id, after=after, before=before, **params):
-            markets.append(market)
-        return AsyncOrderBookWalk(markets, self)
+        # 2. Try as a series slug
+        try:
+            series = await self._series.get(id)
+            if series.structured_type:
+                event_params = dict(params)
+                if after is not None:
+                    event_params["end_after"] = after
+                if before is not None:
+                    event_params["start_before"] = before
+                events = await (await self._series.events(id, **event_params)).to_list()
+                return AsyncEventOrderBookWalk(
+                    events, self._events, self, series,
+                    after=after, before=before,
+                )
+            elif series.is_rolling:
+                markets = []
+                async for m in self._series.walk(id, after=after, before=before, **params):
+                    markets.append(m)
+                return AsyncOrderBookWalk(
+                    markets, self, series=series, events_resource=self._events,
+                )
+            else:
+                raise ValueError(
+                    f"Series '{series.title}' is neither rolling nor structured. "
+                    f"Use a market ID to walk individual markets."
+                )
+        except NotFoundError:
+            pass
+
+        # 3. Fallback: try as a condition ID
+        found = await self._markets.list(condition_id=id).to_list()
+        if found:
+            market = found[0]
+            series = None
+            if market.series_id and self._series:
+                try:
+                    series = await self._series.get(market.series_id)
+                except Exception:
+                    pass
+            return AsyncOrderBookWalk(
+                [market], self, after=after, before=before,
+                series=series, events_resource=self._events,
+            )
+
+        raise NotFoundError(404, "NOT_FOUND", f"No market or series found for '{id}'")

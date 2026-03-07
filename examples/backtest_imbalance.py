@@ -1,53 +1,42 @@
-"""Trade order book imbalance signal, exit before settlement.
-
-Enters once per market when imbalance is strong, exits when signal fades.
-"""
+"""Imbalance signal with early exit — enter on strong signal, exit when it fades."""
 
 from datetime import datetime, timezone
 
 from marketlens import MarketLens
 from marketlens.backtest import Strategy
 
-class ImbalanceTrader(Strategy):
-    def __init__(self, entry=0.3, exit_at=0.05):
-        self.entry = entry
-        self.exit_at = exit_at
-        self._traded = False
 
+class ImbalanceTrader(Strategy):
     def on_market_start(self, ctx, market, book):
         self._traded = False
 
     def on_book(self, ctx, market, book):
-        pos = ctx.position()
         imb = book.imbalance(levels=3)
         if imb is None:
             return
-
+        pos = ctx.position()
         if pos.side == "FLAT" and not self._traded:
-            if imb > self.entry:
+            if imb > 0.3:
                 ctx.buy_yes(size="200")
                 self._traded = True
-            elif imb < -self.entry:
+            elif imb < -0.3:
                 ctx.buy_no(size="200")
                 self._traded = True
-        elif pos.side == "YES" and imb < self.exit_at:
+        elif pos.side == "YES" and imb < 0.05:
             ctx.sell_yes(size=pos.shares)
-        elif pos.side == "NO" and imb > -self.exit_at:
+        elif pos.side == "NO" and imb > -0.05:
             ctx.sell_no(size=pos.shares)
 
 
 client = MarketLens()
 result = client.backtest(
-    ImbalanceTrader(),
-    "btc-up-or-down-5m",
+    ImbalanceTrader(), "sol-up-or-down-5m",
     after=datetime(2026, 3, 5, 10, 0, tzinfo=timezone.utc),
-    before=datetime(2026, 3, 5, 10, 3, tzinfo=timezone.utc),
+    before=datetime(2026, 3, 5, 10, 15, tzinfo=timezone.utc),
     initial_cash="10000.0000",
     fees="polymarket",
     slippage_bps=5,
 )
 print(result)
-print()
-print("Trades:")
 print(result.trades_df().to_string())
 client.close()

@@ -9,6 +9,7 @@ from marketlens.backtest._types import (
     OrderSide,
     Position,
 )
+from marketlens.types.event import Event
 from marketlens.types.history import TradeEvent
 from marketlens.types.market import Market
 from marketlens.types.orderbook import OrderBook
@@ -35,6 +36,14 @@ class Strategy(ABC):
 
     def on_market_end(self, ctx: StrategyContext, market: Market) -> None:
         """Called when a market's data is exhausted, before settlement."""
+
+    def on_event_start(
+        self, ctx: StrategyContext, event: Event, markets: list[Market],
+    ) -> None:
+        """Called when a new event begins in a non-rolling series walk."""
+
+    def on_event_end(self, ctx: StrategyContext, event: Event) -> None:
+        """Called when all markets in an event are exhausted."""
 
 
 class StrategyContext:
@@ -110,3 +119,11 @@ class StrategyContext:
     @property
     def current_time(self) -> int:
         return self._engine.current_time
+
+    @property
+    def event(self) -> Event | None:
+        return self._engine._current_event
+
+    @property
+    def event_books(self) -> dict[str, OrderBook]:
+        return dict(self._engine._event_books)

@@ -13,6 +13,7 @@ class Series(BaseModel):
     recurrence: str | None = None
     category: str | None = None
     is_rolling: bool
+    structured_type: str | None = None
     market_count: int
     first_market_close: int | None = None
     last_market_close: int | None = None

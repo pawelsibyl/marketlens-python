@@ -37,5 +37,8 @@ class Market(BaseModel):
     close_time: int | None = None
     resolved_at: int | None = None
     platform_resolved_at: int | None = None
+    strike: str | None = None
+    strike_upper: str | None = None
+    strike_direction: str | None = None
     created_at: int | None = None
     updated_at: int | None = None

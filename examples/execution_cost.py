@@ -1,27 +1,23 @@
-"""Analyze execution costs across order sizes on a live order book."""
+"""Live order book depth and execution cost analysis across order sizes."""
 
 from marketlens import MarketLens
 
 client = MarketLens()
-market = client.markets.get("a23fb05b-2b54-5b69-98b5-568ac3dd4f6b")
-book = client.orderbook.get(market.id)
+book = client.orderbook.get("a23fb05b-2b54-5b69-98b5-568ac3dd4f6b")
 
-print(f"{market.question}")
-print(f"  {book.bid_levels} bids ({book.bid_depth} USD)  {book.ask_levels} asks ({book.ask_depth} USD)")
-print(f"  spread: {book.spread} ({book.spread_bps():.0f} bps)  midpoint: {book.midpoint}")
-print(f"  microprice: {book.microprice()}  weighted mid: {book.weighted_midpoint(n=3)}")
-print(f"  imbalance: {book.imbalance():.3f} (full book)  {book.imbalance(levels=3):.3f} (top 3)")
+print(f"mid={book.midpoint}  spread={book.spread} ({book.spread_bps():.0f}bps)")
+print(f"microprice={book.microprice()}  weighted_mid={book.weighted_midpoint(n=3)}")
+print(f"imbalance: full={book.imbalance():.3f}  top3={book.imbalance(levels=3):.3f}")
 
 bid_near, ask_near = book.depth_within("0.02")
-print(f"  depth within 2c of mid: {bid_near} bid / {ask_near} ask")
+print(f"depth within 2c: {bid_near} bid / {ask_near} ask")
 
-print(f"  {'size':>8}  {'avg fill':>10}  {'slippage':>10}  {'impact bps':>10}")
 for size in ["100", "1000", "5000", "25000"]:
     avg = book.impact("BUY", size)
     slip = book.slippage("BUY", size)
     if avg and slip and book.midpoint:
         bps = float(slip) / float(book.midpoint) * 10_000
-        print(f"  ${size:>7}  {avg:>10}  {slip:>10}  {bps:>9.1f}")
+        print(f"  ${size:>6} → avg_fill={avg}  slippage={bps:.1f}bps")
     else:
-        print(f"  ${size:>7}  insufficient liquidity")
+        print(f"  ${size:>6} → insufficient liquidity")
 client.close()

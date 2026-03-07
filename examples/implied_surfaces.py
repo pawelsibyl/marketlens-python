@@ -1,7 +1,6 @@
-"""Implied probability surfaces from multi-strike prediction markets.
+"""Implied probability surfaces — survival, density, and barrier.
 
-Fetches survival curves, density distributions, and barrier probabilities
-derived from live L2 order book midpoints. Updated every 5 minutes.
+Pre-computed every 5 minutes from live L2 midpoints via isotonic regression.
 """
 
 from marketlens import MarketLens
@@ -12,23 +11,20 @@ for surface in client.signals.surfaces(underlying="BTC"):
     print(f"\n{surface.series_title}  [{surface.surface_type}]")
 
     if surface.surface_type == "survival":
-        print(f"  implied mean={surface.implied_mean}  vol={surface.implied_cv}%  skew={surface.implied_skew}")
         for s in surface.survival_strikes():
-            fitted = f"{s.fitted_prob:.3f}"
-            raw = f"{s.raw_prob:.3f}"
             flag = " *" if abs(s.fitted_prob - s.raw_prob) > 0.01 else ""
-            print(f"  K={s.strike:>10,.0f}  P(above)={fitted}  (raw {raw}){flag}")
+            print(f"  K=${s.strike:>10,.0f}  P(above)={s.fitted_prob:.3f}  raw={s.raw_prob:.3f}{flag}")
+        print(f"  → mean=${float(surface.implied_mean):,.0f}  cv={surface.implied_cv}%")
 
     elif surface.surface_type == "density":
-        print(f"  implied mean={surface.implied_mean}  vol={surface.implied_cv}%  skew={surface.implied_skew}")
         for b in surface.density_buckets():
             lo = f"${b.lower:,.0f}" if b.lower else "<tail"
             hi = f"${b.upper:,.0f}" if b.upper else "tail>"
-            print(f"  {lo:>10}-{hi:<10}  p={b.normalized_prob:.3f}  (raw {b.prob:.3f})")
+            print(f"  {lo:>10}-{hi:<10}  p={b.normalized_prob:.3f}")
+        print(f"  → mean=${float(surface.implied_mean):,.0f}  cv={surface.implied_cv}%")
 
     elif surface.surface_type == "barrier":
-        print(f"  peak={surface.implied_peak} ({surface.implied_peak_cv}%)  trough={surface.implied_trough} ({surface.implied_trough_cv}%)")
         for b in surface.barrier_strikes():
-            print(f"  {b.direction:>8} ${b.strike:>10,.0f}  P={b.fitted_prob:.3f}  (raw {b.raw_prob:.3f})")
+            print(f"  {b.direction:>5} ${b.strike:>10,.0f}  P={b.fitted_prob:.3f}  raw={b.raw_prob:.3f}")
 
 client.close()
