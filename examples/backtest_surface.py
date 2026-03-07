@@ -42,8 +42,8 @@ series = client.series.get("tsla-multi-strikes-weekly")
 result = client.backtest(
     SurfaceMispricing(series), "tsla-multi-strikes-weekly",
     initial_cash="10000.0000",
-    after=datetime(2026, 3, 3, tzinfo=timezone.utc),
-    before=datetime(2026, 3, 7, tzinfo=timezone.utc),
+    after=datetime(2026, 3, 5, 10, 0, tzinfo=timezone.utc),
+    before=datetime(2026, 3, 5, 10, 30, tzinfo=timezone.utc),
 )
 print(result)
 print(result.trades_df().to_string())

@@ -74,13 +74,11 @@ class SeriesResource:
                 params["close_after"] = after
             if before is not None:
                 params["close_before"] = before
-            markets = SyncPageIterator(self._client, "/markets", params, Market).to_list()
+            yield from SyncPageIterator(self._client, "/markets", params, Market)
         else:
-            markets = SyncPageIterator(
+            yield from SyncPageIterator(
                 self._client, f"/series/{resolved.id}/markets", params, Market,
-            ).to_list()
-
-        yield from markets
+            )
 
     def events(self, series_id: str, **params: Any) -> SyncPageIterator[Event]:
         """List events belonging to a series.
@@ -150,16 +148,13 @@ class AsyncSeriesResource:
                 params["close_after"] = after
             if before is not None:
                 params["close_before"] = before
-            markets = await AsyncPageIterator(
-                self._client, "/markets", params, Market,
-            ).to_list()
+            async for market in AsyncPageIterator(self._client, "/markets", params, Market):
+                yield market
         else:
-            markets = await AsyncPageIterator(
+            async for market in AsyncPageIterator(
                 self._client, f"/series/{resolved.id}/markets", params, Market,
-            ).to_list()
-
-        for market in markets:
-            yield market
+            ):
+                yield market
 
     async def events(self, series_id: str, **params: Any) -> AsyncPageIterator[Event]:
         """List events belonging to a series (async).

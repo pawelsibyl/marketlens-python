@@ -12,8 +12,8 @@ client = MarketLens()
 
 df = client.orderbook.walk(
     "eth-up-or-down-15m",
-    after=datetime(2026, 3, 5, 8, 0, tzinfo=timezone.utc),
-    before=datetime(2026, 3, 5, 10, 0, tzinfo=timezone.utc),
+    after=datetime(2026, 3, 5, 9, 0, tzinfo=timezone.utc),
+    before=datetime(2026, 3, 5, 9, 30, tzinfo=timezone.utc),
 ).to_dataframe()
 
 features = df.groupby("market_id").agg(

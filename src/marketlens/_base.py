@@ -83,7 +83,7 @@ class SyncHTTPClient:
         max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> None:
         self.api_key = api_key or os.environ.get("MARKETLENS_API_KEY", "")
-        self.base_url = base_url.rstrip("/")
+        self.base_url = (os.environ.get("MARKETLENS_BASE_URL") or base_url).rstrip("/")
         self.max_retries = max_retries
         self._client = httpx.Client(
             base_url=self.base_url,
@@ -149,7 +149,7 @@ class AsyncHTTPClient:
         max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> None:
         self.api_key = api_key or os.environ.get("MARKETLENS_API_KEY", "")
-        self.base_url = base_url.rstrip("/")
+        self.base_url = (os.environ.get("MARKETLENS_BASE_URL") or base_url).rstrip("/")
         self.max_retries = max_retries
         self._client = httpx.AsyncClient(
             base_url=self.base_url,

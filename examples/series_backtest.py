@@ -24,10 +24,10 @@ class SpreadTimer(Strategy):
 
 client = MarketLens()
 result = client.backtest(
-    SpreadTimer(), "sol-up-or-down-hourly",
+    SpreadTimer(), "solana-up-or-down-hourly",
     initial_cash="10000.0000",
     after=datetime(2026, 3, 5, 12, 0, tzinfo=timezone.utc),
-    before=datetime(2026, 3, 5, 18, 0, tzinfo=timezone.utc),
+    before=datetime(2026, 3, 5, 13, 0, tzinfo=timezone.utc),
 )
 print(result)
 print(result.trades_df().to_string())

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 from decimal import Decimal
 from typing import AsyncIterable, AsyncIterator, Iterable, Iterator
 
@@ -41,50 +42,117 @@ def _rows_to_dataframe(rows: list[dict]):
     return df
 
 
-def _build_book(
-    bids: dict[str, Decimal],
-    asks: dict[str, Decimal],
-    market_id: str,
-    platform: str,
-    as_of: int,
-) -> OrderBook:
-    """Build an OrderBook from raw bid/ask dicts."""
-    bid_levels = sorted(
-        [PriceLevel(price=p, size=str(s.quantize(FOUR))) for p, s in bids.items() if s > ZERO],
-        key=lambda l: Decimal(l.price),
-        reverse=True,
-    )
-    ask_levels = sorted(
-        [PriceLevel(price=p, size=str(s.quantize(FOUR))) for p, s in asks.items() if s > ZERO],
-        key=lambda l: Decimal(l.price),
+def _norm_price(price: str) -> str:
+    """Normalize a price string to 4 decimal places."""
+    return str(Decimal(price).quantize(FOUR))
+
+
+class _BookBuilder:
+    """Incrementally maintains sorted order book state.
+
+    On snapshot: full rebuild.  On delta: bisect insert/remove of one level.
+    Both sides are stored in ascending price order internally.
+    """
+
+    __slots__ = (
+        "_market_id", "_platform",
+        "_bid_prices", "_bid_levels", "_bid_depth",
+        "_ask_prices", "_ask_levels", "_ask_depth",
     )
 
-    best_bid = bid_levels[0].price if bid_levels else None
-    best_ask = ask_levels[0].price if ask_levels else None
-    spread = None
-    midpoint = None
-    if best_bid and best_ask:
-        spread = str((Decimal(best_ask) - Decimal(best_bid)).quantize(FOUR))
-        midpoint = str(((Decimal(best_bid) + Decimal(best_ask)) / 2).quantize(FOUR))
+    def __init__(self, market_id: str, platform: str) -> None:
+        self._market_id = market_id
+        self._platform = platform
+        self._bid_prices: list[str] = []
+        self._bid_levels: list[PriceLevel] = []
+        self._bid_depth = ZERO
+        self._ask_prices: list[str] = []
+        self._ask_levels: list[PriceLevel] = []
+        self._ask_depth = ZERO
 
-    bid_depth = str(sum((Decimal(l.size) for l in bid_levels), ZERO).quantize(FOUR))
-    ask_depth = str(sum((Decimal(l.size) for l in ask_levels), ZERO).quantize(FOUR))
+    def snapshot(self, bids: list[PriceLevel], asks: list[PriceLevel], as_of: int) -> OrderBook:
+        """Full reset from snapshot data."""
+        bid_data: dict[str, Decimal] = {}
+        for level in bids:
+            s = Decimal(level.size)
+            if s > ZERO:
+                bid_data[_norm_price(level.price)] = s
+        self._bid_prices = sorted(bid_data)
+        self._bid_levels = [
+            PriceLevel(price=p, size=str(bid_data[p].quantize(FOUR)))
+            for p in self._bid_prices
+        ]
+        self._bid_depth = sum(bid_data.values(), ZERO)
 
-    return OrderBook(
-        market_id=market_id,
-        platform=platform,
-        as_of=as_of,
-        bids=bid_levels,
-        asks=ask_levels,
-        best_bid=best_bid,
-        best_ask=best_ask,
-        spread=spread,
-        midpoint=midpoint,
-        bid_depth=bid_depth,
-        ask_depth=ask_depth,
-        bid_levels=len(bid_levels),
-        ask_levels=len(ask_levels),
-    )
+        ask_data: dict[str, Decimal] = {}
+        for level in asks:
+            s = Decimal(level.size)
+            if s > ZERO:
+                ask_data[_norm_price(level.price)] = s
+        self._ask_prices = sorted(ask_data)
+        self._ask_levels = [
+            PriceLevel(price=p, size=str(ask_data[p].quantize(FOUR)))
+            for p in self._ask_prices
+        ]
+        self._ask_depth = sum(ask_data.values(), ZERO)
+
+        return self._make_book(as_of)
+
+    def delta(self, price: str, size: Decimal, side: str, as_of: int) -> OrderBook:
+        """Apply a single price level change."""
+        price = _norm_price(price)
+        if side == "BUY":
+            self._bid_depth += self._apply(self._bid_prices, self._bid_levels, price, size)
+        else:
+            self._ask_depth += self._apply(self._ask_prices, self._ask_levels, price, size)
+        return self._make_book(as_of)
+
+    @staticmethod
+    def _apply(
+        prices: list[str], levels: list[PriceLevel], price: str, size: Decimal,
+    ) -> Decimal:
+        """Insert, update, or remove a single level. Returns depth change."""
+        idx = bisect.bisect_left(prices, price)
+        exists = idx < len(prices) and prices[idx] == price
+        old_size = ZERO
+
+        if exists:
+            old_size = Decimal(levels[idx].size)
+            if size > ZERO:
+                levels[idx] = PriceLevel(price=price, size=str(size.quantize(FOUR)))
+            else:
+                prices.pop(idx)
+                levels.pop(idx)
+        elif size > ZERO:
+            prices.insert(idx, price)
+            levels.insert(idx, PriceLevel(price=price, size=str(size.quantize(FOUR))))
+
+        return size - old_size
+
+    def _make_book(self, as_of: int) -> OrderBook:
+        best_bid = self._bid_prices[-1] if self._bid_prices else None
+        best_ask = self._ask_prices[0] if self._ask_prices else None
+
+        spread = midpoint = None
+        if best_bid is not None and best_ask is not None:
+            spread = str((Decimal(best_ask) - Decimal(best_bid)).quantize(FOUR))
+            midpoint = str(((Decimal(best_bid) + Decimal(best_ask)) / 2).quantize(FOUR))
+
+        return OrderBook(
+            market_id=self._market_id,
+            platform=self._platform,
+            as_of=as_of,
+            bids=list(reversed(self._bid_levels)),
+            asks=list(self._ask_levels),
+            best_bid=best_bid,
+            best_ask=best_ask,
+            spread=spread,
+            midpoint=midpoint,
+            bid_depth=str(self._bid_depth.quantize(FOUR)),
+            ask_depth=str(self._ask_depth.quantize(FOUR)),
+            bid_levels=len(self._bid_levels),
+            ask_levels=len(self._ask_levels),
+        )
 
 
 class OrderBookReplay:
@@ -116,16 +184,13 @@ class OrderBookReplay:
         self._platform = platform
 
     def __iter__(self) -> Iterator[tuple[HistoryEvent, OrderBook]]:
-        bids: dict[str, Decimal] = {}
-        asks: dict[str, Decimal] = {}
+        builder = _BookBuilder(self._market_id, self._platform)
         book: OrderBook | None = None
         initialized = False
 
         for event in self._events:
             if isinstance(event, SnapshotEvent):
-                bids = {l.price: Decimal(l.size) for l in event.bids}
-                asks = {l.price: Decimal(l.size) for l in event.asks}
-                book = _build_book(bids, asks, self._market_id, self._platform, event.t)
+                book = builder.snapshot(event.bids, event.asks, event.t)
                 initialized = True
                 yield event, book
 
@@ -135,24 +200,15 @@ class OrderBookReplay:
                         "OrderBookReplay received a delta before any snapshot. "
                         "The history stream must begin with a snapshot event."
                     )
-                side_book = bids if event.side == "BUY" else asks
-                price = str(Decimal(event.price).quantize(FOUR))
-                size = Decimal(event.size)
-                if size == ZERO:
-                    side_book.pop(price, None)
-                else:
-                    side_book[price] = size
-                book = _build_book(bids, asks, self._market_id, self._platform, event.t)
+                book = builder.delta(event.price, Decimal(event.size), event.side, event.t)
                 yield event, book
 
             elif isinstance(event, TradeEvent):
-                if book is None:
-                    if not initialized:
-                        raise ValueError(
-                            "OrderBookReplay received a trade before any snapshot. "
-                            "The history stream must begin with a snapshot event."
-                        )
-                    book = _build_book(bids, asks, self._market_id, self._platform, event.t)
+                if not initialized:
+                    raise ValueError(
+                        "OrderBookReplay received a trade before any snapshot. "
+                        "The history stream must begin with a snapshot event."
+                    )
                 yield event, book
 
     def to_dataframe(self):
@@ -200,16 +256,13 @@ class AsyncOrderBookReplay:
         self._platform = platform
 
     async def __aiter__(self) -> AsyncIterator[tuple[HistoryEvent, OrderBook]]:
-        bids: dict[str, Decimal] = {}
-        asks: dict[str, Decimal] = {}
+        builder = _BookBuilder(self._market_id, self._platform)
         book: OrderBook | None = None
         initialized = False
 
         async for event in self._events:
             if isinstance(event, SnapshotEvent):
-                bids = {l.price: Decimal(l.size) for l in event.bids}
-                asks = {l.price: Decimal(l.size) for l in event.asks}
-                book = _build_book(bids, asks, self._market_id, self._platform, event.t)
+                book = builder.snapshot(event.bids, event.asks, event.t)
                 initialized = True
                 yield event, book
 
@@ -219,24 +272,15 @@ class AsyncOrderBookReplay:
                         "OrderBookReplay received a delta before any snapshot. "
                         "The history stream must begin with a snapshot event."
                     )
-                side_book = bids if event.side == "BUY" else asks
-                price = str(Decimal(event.price).quantize(FOUR))
-                size = Decimal(event.size)
-                if size == ZERO:
-                    side_book.pop(price, None)
-                else:
-                    side_book[price] = size
-                book = _build_book(bids, asks, self._market_id, self._platform, event.t)
+                book = builder.delta(event.price, Decimal(event.size), event.side, event.t)
                 yield event, book
 
             elif isinstance(event, TradeEvent):
-                if book is None:
-                    if not initialized:
-                        raise ValueError(
-                            "OrderBookReplay received a trade before any snapshot. "
-                            "The history stream must begin with a snapshot event."
-                        )
-                    book = _build_book(bids, asks, self._market_id, self._platform, event.t)
+                if not initialized:
+                    raise ValueError(
+                        "OrderBookReplay received a trade before any snapshot. "
+                        "The history stream must begin with a snapshot event."
+                    )
                 yield event, book
 
     async def to_dataframe(self):
