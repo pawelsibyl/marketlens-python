@@ -10,9 +10,9 @@ client = MarketLens()
 
 for surface in client.signals.surfaces(underlying="BTC"):
     print(f"\n{surface.series_title}  [{surface.surface_type}]")
-    print(f"  implied mean={surface.implied_mean}  vol={surface.implied_cv}%  skew={surface.implied_skew}")
 
     if surface.surface_type == "survival":
+        print(f"  implied mean={surface.implied_mean}  vol={surface.implied_cv}%  skew={surface.implied_skew}")
         for s in surface.survival_strikes():
             fitted = f"{s.fitted_prob:.3f}"
             raw = f"{s.raw_prob:.3f}"
@@ -20,12 +20,14 @@ for surface in client.signals.surfaces(underlying="BTC"):
             print(f"  K={s.strike:>10,.0f}  P(above)={fitted}  (raw {raw}){flag}")
 
     elif surface.surface_type == "density":
+        print(f"  implied mean={surface.implied_mean}  vol={surface.implied_cv}%  skew={surface.implied_skew}")
         for b in surface.density_buckets():
             lo = f"${b.lower:,.0f}" if b.lower else "<tail"
             hi = f"${b.upper:,.0f}" if b.upper else "tail>"
             print(f"  {lo:>10}-{hi:<10}  p={b.normalized_prob:.3f}  (raw {b.prob:.3f})")
 
     elif surface.surface_type == "barrier":
+        print(f"  peak={surface.implied_peak} ({surface.implied_peak_cv}%)  trough={surface.implied_trough} ({surface.implied_trough_cv}%)")
         for b in surface.barrier_strikes():
             print(f"  {b.direction:>8} ${b.strike:>10,.0f}  P={b.fitted_prob:.3f}  (raw {b.raw_prob:.3f})")
 

@@ -68,7 +68,8 @@ def _get_registry() -> dict[type, _DFConfig]:
             timestamps=("first_market_close", "last_market_close"),
         ),
         Surface: _DFConfig(
-            numeric=("implied_mean", "implied_cv", "implied_skew"),
+            numeric=("implied_mean", "implied_cv", "implied_skew",
+                     "implied_peak", "implied_peak_cv", "implied_trough", "implied_trough_cv"),
             timestamps=("computed_at", "expiry_ms"),
             index="computed_at",
             exclude=("strikes",),

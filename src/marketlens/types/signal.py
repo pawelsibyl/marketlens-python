@@ -46,6 +46,11 @@ class Surface(BaseModel):
     implied_mean: str | None = None
     implied_cv: str | None = None
     implied_skew: str | None = None
+    # Barrier-specific: expected peak/trough from reach/dip curves
+    implied_peak: str | None = None
+    implied_peak_cv: str | None = None
+    implied_trough: str | None = None
+    implied_trough_cv: str | None = None
     strikes: list[dict]
 
     def survival_strikes(self) -> list[SurvivalStrike]:
@@ -56,3 +61,13 @@ class Surface(BaseModel):
 
     def barrier_strikes(self) -> list[BarrierStrike]:
         return [BarrierStrike.model_validate(s) for s in self.strikes]
+
+    def typed_strikes(self) -> list[SurvivalStrike] | list[DensityBucket] | list[BarrierStrike]:
+        """Parse strikes based on surface_type automatically."""
+        if self.surface_type == "survival":
+            return self.survival_strikes()
+        if self.surface_type == "density":
+            return self.density_buckets()
+        if self.surface_type == "barrier":
+            return self.barrier_strikes()
+        return self.strikes
