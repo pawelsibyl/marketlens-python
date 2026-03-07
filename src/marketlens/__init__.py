@@ -16,9 +16,11 @@ from marketlens.exceptions import (
 from marketlens.backtest import BacktestConfig, BacktestEngine, BacktestResult, Strategy
 from marketlens.helpers.walk import AsyncOrderBookWalk, OrderBookWalk
 from marketlens.types import (
+    BarrierStrike,
     BookMetrics,
     Candle,
     DeltaEvent,
+    DensityBucket,
     Event,
     Market,
     MarketStatus,
@@ -30,6 +32,8 @@ from marketlens.types import (
     Series,
     Side,
     SnapshotEvent,
+    Surface,
+    SurvivalStrike,
     Trade,
     TradeEvent,
 )
@@ -58,6 +62,10 @@ __all__ = [
     "SnapshotEvent",
     "DeltaEvent",
     "TradeEvent",
+    "Surface",
+    "SurvivalStrike",
+    "DensityBucket",
+    "BarrierStrike",
     # Enums
     "MarketStatus",
     "Side",

@@ -10,7 +10,7 @@ client = MarketLens()
 
 for surface in client.signals.surfaces(underlying="BTC"):
     print(f"\n{surface.series_title}  [{surface.surface_type}]")
-    print(f"  implied mean={surface.implied_mean}  vol={surface.implied_vol}%  skew={surface.implied_skew}")
+    print(f"  implied mean={surface.implied_mean}  vol={surface.implied_cv}%  skew={surface.implied_skew}")
 
     if surface.surface_type == "survival":
         for s in surface.survival_strikes():

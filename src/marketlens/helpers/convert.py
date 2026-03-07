@@ -37,6 +37,7 @@ def _get_registry() -> dict[type, _DFConfig]:
     from marketlens.types.market import Market
     from marketlens.types.orderbook import BookMetrics
     from marketlens.types.series import Series
+    from marketlens.types.signal import Surface
     from marketlens.types.trade import Trade
 
     _REGISTRY = {
@@ -65,6 +66,12 @@ def _get_registry() -> dict[type, _DFConfig]:
         ),
         Series: _DFConfig(
             timestamps=("first_market_close", "last_market_close"),
+        ),
+        Surface: _DFConfig(
+            numeric=("implied_mean", "implied_cv", "implied_skew"),
+            timestamps=("computed_at", "expiry_ms"),
+            index="computed_at",
+            exclude=("strikes",),
         ),
     }
     return _REGISTRY

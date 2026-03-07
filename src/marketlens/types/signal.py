@@ -44,7 +44,7 @@ class Surface(BaseModel):
     expiry_ms: int
     n_strikes: int
     implied_mean: str | None = None
-    implied_vol: str | None = None
+    implied_cv: str | None = None
     implied_skew: str | None = None
     strikes: list[dict]
 
