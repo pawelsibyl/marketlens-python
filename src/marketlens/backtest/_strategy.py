@@ -140,6 +140,12 @@ class StrategyContext:
     def books(self) -> dict[str, OrderBook]:
         return dict(self._engine._books)
 
+    def reference_price(self, market_id: str | None = None) -> str | None:
+        """Return the latest reference price for the market's underlying at the current time."""
+        mid = market_id or self._engine.current_market.id
+        underlying = self._engine._market_underlying.get(mid)
+        return self._engine.get_reference_price(underlying, self._engine.current_time)
+
     # ── Backwards-compatible aliases ──────────────────────────────
 
     @property

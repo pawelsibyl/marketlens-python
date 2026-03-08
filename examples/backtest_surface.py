@@ -5,10 +5,12 @@ tick. When the fitted probability exceeds the raw midpoint by a threshold,
 the strike is underpriced relative to the curve — buy YES.
 
 Uses on_market_start to collect market metadata, ctx.books for cross-strike
-state, and compute_surface for real-time PAVA regression.
+state, compute_surface for real-time PAVA regression, and ctx.reference_price()
+to filter trades to strikes near the current spot price.
 """
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from marketlens import MarketLens
 from marketlens.backtest import Strategy
@@ -28,6 +30,12 @@ class SurfaceMispricing(Strategy):
     def on_book(self, ctx, market, book):
         if market.id in self._traded:
             return
+        # Only trade strikes near the current spot price
+        ref = ctx.reference_price()
+        if ref and market.strike:
+            distance = abs(Decimal(ref) - Decimal(market.strike)) / Decimal(ref)
+            if distance > Decimal("0.05"):
+                return
         surface = compute_surface(ctx.books, self._mkts, self.series)
         if not surface:
             return

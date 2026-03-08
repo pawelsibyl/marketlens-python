@@ -99,6 +99,8 @@ result.equity_df()       # equity curve over time
 
 For structured products and multi-market backtests, `ctx.books` gives the latest book for every active market — the same cross-market view as `walk.books`.
 
+For markets with a crypto underlying, `ctx.reference_price()` returns the Binance spot price at the current tick — useful for computing moneyness, basis, or filtering by distance-to-strike.
+
 ### Execution realism
 
 | Parameter | Default | Description |
@@ -137,6 +139,21 @@ for surface in client.signals.surfaces(underlying="BTC"):
 | `density` | Neg-risk range + tail markets | Normalized probabilities | `implied_mean`, `implied_cv`, `implied_skew` |
 | `barrier` | Hit-price reach/dip markets | PAVA per direction | `implied_peak`, `implied_peak_cv`, `implied_trough`, `implied_trough_cv` |
 
+## Reference Prices
+
+Binance spot prices for crypto underlyings (BTC, ETH, SOL, XRP, BNB, DOGE, LINK, HYPE, ENA) at 1-second resolution. Markets with a recognized underlying expose it via `market.underlying`.
+
+```python
+# Direct access
+for candle in client.reference.candles("BTC", after=start, before=end):
+    print(candle.timestamp, candle.close)
+
+# In a backtest — spot price at the current tick
+class MyStrategy(Strategy):
+    def on_book(self, ctx, market, book):
+        spot = ctx.reference_price()  # Binance close for market's underlying
+```
+
 ## OrderBook Analytics
 
 Every `OrderBook` — live snapshot or replayed — carries the same analytical methods:
@@ -163,6 +180,7 @@ book.depth_within("0.02")      # (bid_depth, ask_depth) within 2c of mid
 | `client.series` | `list()` `get()` `markets()` `walk()` `events()` |
 | `client.orderbook` | `get()` `history()` `metrics()` `walk()` |
 | `client.signals` | `surfaces()` `surface()` `history()` |
+| `client.reference` | `candles()` |
 | `client.exports` | `download()` `download_range()` |
 
 All list methods return auto-paginating iterators with `.to_list()` and `.to_dataframe()`.
@@ -218,7 +236,7 @@ async with AsyncMarketLens() as client:
 | [`event_strikes.py`](examples/event_strikes.py) | Structured product walk — parallel books with live surface fitting |
 | [`backtest_basic.py`](examples/backtest_basic.py) | Single-series backtest — spread-timing strategy with settlement |
 | [`backtest_limit_orders.py`](examples/backtest_limit_orders.py) | Market-making with limit orders and on_fill exit |
-| [`backtest_surface.py`](examples/backtest_surface.py) | Surface mispricing — PAVA regression identifies underpriced strikes |
+| [`backtest_surface.py`](examples/backtest_surface.py) | Surface mispricing — PAVA regression with spot-distance filter via reference prices |
 | [`backtest_portfolio.py`](examples/backtest_portfolio.py) | Multi-series portfolio — imbalance strategy across three assets |
 
 ## License

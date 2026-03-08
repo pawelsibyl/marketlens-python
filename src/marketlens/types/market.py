@@ -40,5 +40,6 @@ class Market(BaseModel):
     strike: str | None = None
     strike_upper: str | None = None
     strike_direction: str | None = None
+    underlying: str | None = None
     created_at: int | None = None
     updated_at: int | None = None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, AsyncIterator, Iterator
@@ -78,6 +79,8 @@ class _EngineCore:
         self._books: dict[str, OrderBook] = {}
         self._market_series: dict[str, str] = {}  # market_id → series_id (for settlement attribution)
         self._market_group: dict[str, str] = {}    # market_id → group key (for sequential slot tracking)
+        self._ref_prices: dict[str, list[tuple[int, str]]] = {}  # symbol → sorted (timestamp, close)
+        self._market_underlying: dict[str, str | None] = {}  # market_id → underlying symbol
 
         self._ctx = StrategyContext(self)
 
@@ -395,6 +398,21 @@ class _EngineCore:
             for event, book in replay:
                 yield market, event, book
 
+    def get_reference_price(self, symbol: str | None, at_time: int) -> str | None:
+        if symbol is None or symbol not in self._ref_prices:
+            return None
+        prices = self._ref_prices[symbol]
+        if not prices:
+            return None
+        # bisect for latest entry <= at_time
+        idx = bisect.bisect_right(prices, (at_time, "~")) - 1
+        if idx < 0:
+            return None
+        return prices[idx][1]
+
+    def _register_market(self, market: Market) -> None:
+        self._market_underlying[market.id] = market.underlying
+
     def _build_result(self) -> BacktestResult:
         return BacktestResult(
             portfolio=self._portfolio,
@@ -407,6 +425,19 @@ class _EngineCore:
 
 
 class BacktestEngine(_EngineCore):
+    def _prefetch_reference_prices(self, client: Any, after: int | None, before: int | None) -> None:
+        underlyings = {u for u in self._market_underlying.values() if u is not None}
+        for symbol in underlyings:
+            if symbol in self._ref_prices:
+                continue
+            params: dict[str, Any] = {"order": "asc", "limit": 5000}
+            if after is not None:
+                params["after"] = after
+            if before is not None:
+                params["before"] = before
+            candles = client.reference.candles(symbol, **params).to_list()
+            self._ref_prices[symbol] = [(c.timestamp, c.close) for c in candles]
+
     def run(
         self,
         client: Any,
@@ -418,6 +449,7 @@ class BacktestEngine(_EngineCore):
     ) -> BacktestResult:
         if isinstance(id, list):
             streams = self._resolve_list(client, id, after=after, before=before, **params)
+            self._prefetch_reference_prices(client, after, before)
             self._run_merged(streams)
             return self._build_result()
 
@@ -425,6 +457,8 @@ class BacktestEngine(_EngineCore):
         try:
             market = client.markets.get(id)
             self._market_series[market.id] = market.series_id or market.id
+            self._register_market(market)
+            self._prefetch_reference_prices(client, after, before)
             self._run_merged([self._make_market_stream(client, [market], after=after, before=before)])
             return self._build_result()
         except NotFoundError:
@@ -441,12 +475,15 @@ class BacktestEngine(_EngineCore):
                 streams = self._resolve_structured(
                     client, id, series, after=after, before=before, **params,
                 )
+                self._prefetch_reference_prices(client, after, before)
                 self._run_merged(streams)
             elif series.is_rolling:
                 markets = list(client.series.walk(id, after=after, before=before, **params))
                 for m in markets:
                     self._market_series[m.id] = series.id
                     self._market_group[m.id] = series.id
+                    self._register_market(m)
+                self._prefetch_reference_prices(client, after, before)
                 self._run_merged([self._make_market_stream(client, markets, after=after, before=before)])
             else:
                 raise ValueError(
@@ -458,6 +495,8 @@ class BacktestEngine(_EngineCore):
         found = client.markets.list(condition_id=id).to_list()
         if found:
             self._market_series[found[0].id] = found[0].series_id or found[0].id
+            self._register_market(found[0])
+            self._prefetch_reference_prices(client, after, before)
             self._run_merged([self._make_market_stream(client, [found[0]], after=after, before=before)])
             return self._build_result()
 
@@ -478,6 +517,7 @@ class BacktestEngine(_EngineCore):
             try:
                 market = client.markets.get(item_id)
                 self._market_series[market.id] = market.series_id or market.id
+                self._register_market(market)
                 streams.append(self._make_market_stream(client, [market], after=after, before=before))
                 continue
             except NotFoundError:
@@ -494,6 +534,7 @@ class BacktestEngine(_EngineCore):
                 for m in markets:
                     self._market_series[m.id] = series.id
                     self._market_group[m.id] = series.id
+                    self._register_market(m)
                 streams.append(self._make_market_stream(client, markets, after=after, before=before))
             else:
                 raise ValueError(
@@ -535,6 +576,7 @@ class BacktestEngine(_EngineCore):
                 if before_ms is not None and m.open_time and m.open_time > before_ms:
                     continue
                 self._market_series[m.id] = series.id
+                self._register_market(m)
                 streams.append(self._make_market_stream(
                     client, [m], after=after, before=before,
                 ))
@@ -542,6 +584,19 @@ class BacktestEngine(_EngineCore):
 
 
 class AsyncBacktestEngine(_EngineCore):
+    async def _async_prefetch_reference_prices(self, client: Any, after: int | None, before: int | None) -> None:
+        underlyings = {u for u in self._market_underlying.values() if u is not None}
+        for symbol in underlyings:
+            if symbol in self._ref_prices:
+                continue
+            params: dict[str, Any] = {"order": "asc", "limit": 5000}
+            if after is not None:
+                params["after"] = after
+            if before is not None:
+                params["before"] = before
+            candles = await client.reference.candles(symbol, **params).to_list()
+            self._ref_prices[symbol] = [(c.timestamp, c.close) for c in candles]
+
     async def run(
         self,
         client: Any,
@@ -553,6 +608,7 @@ class AsyncBacktestEngine(_EngineCore):
     ) -> BacktestResult:
         if isinstance(id, list):
             streams = await self._resolve_list(client, id, after=after, before=before, **params)
+            await self._async_prefetch_reference_prices(client, after, before)
             await self._run_merged(streams)
             return self._build_result()
 
@@ -560,6 +616,8 @@ class AsyncBacktestEngine(_EngineCore):
         try:
             market = await client.markets.get(id)
             self._market_series[market.id] = market.series_id or market.id
+            self._register_market(market)
+            await self._async_prefetch_reference_prices(client, after, before)
             await self._run_merged([self._async_make_market_stream(client, [market], after=after, before=before)])
             return self._build_result()
         except NotFoundError:
@@ -576,6 +634,7 @@ class AsyncBacktestEngine(_EngineCore):
                 streams = await self._async_resolve_structured(
                     client, id, series, after=after, before=before, **params,
                 )
+                await self._async_prefetch_reference_prices(client, after, before)
                 await self._run_merged(streams)
             elif series.is_rolling:
                 markets = []
@@ -584,6 +643,8 @@ class AsyncBacktestEngine(_EngineCore):
                 for m in markets:
                     self._market_series[m.id] = series.id
                     self._market_group[m.id] = series.id
+                    self._register_market(m)
+                await self._async_prefetch_reference_prices(client, after, before)
                 await self._run_merged([self._async_make_market_stream(client, markets, after=after, before=before)])
             else:
                 raise ValueError(
@@ -595,6 +656,8 @@ class AsyncBacktestEngine(_EngineCore):
         found = await client.markets.list(condition_id=id).to_list()
         if found:
             self._market_series[found[0].id] = found[0].series_id or found[0].id
+            self._register_market(found[0])
+            await self._async_prefetch_reference_prices(client, after, before)
             await self._run_merged([self._async_make_market_stream(client, [found[0]], after=after, before=before)])
             return self._build_result()
 
@@ -615,6 +678,7 @@ class AsyncBacktestEngine(_EngineCore):
             try:
                 market = await client.markets.get(item_id)
                 self._market_series[market.id] = market.series_id or market.id
+                self._register_market(market)
                 streams.append(self._async_make_market_stream(client, [market], after=after, before=before))
                 continue
             except NotFoundError:
@@ -633,6 +697,7 @@ class AsyncBacktestEngine(_EngineCore):
                 for m in markets:
                     self._market_series[m.id] = series.id
                     self._market_group[m.id] = series.id
+                    self._register_market(m)
                 streams.append(self._async_make_market_stream(client, markets, after=after, before=before))
             else:
                 raise ValueError(
@@ -723,6 +788,7 @@ class AsyncBacktestEngine(_EngineCore):
                 if before_ms is not None and m.open_time and m.open_time > before_ms:
                     continue
                 self._market_series[m.id] = series.id
+                self._register_market(m)
                 streams.append(self._async_make_market_stream(
                     client, [m], after=after, before=before,
                 ))
