@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -94,10 +96,8 @@ class SyncHTTPClient:
             },
         )
 
-    def request(self, method: str, path: str, **kwargs: Any) -> Any:
-        if "params" in kwargs:
-            kwargs["params"] = _prepare_params(kwargs["params"])
-
+    def _request_with_retry(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """Execute a request with retry logic. Returns the raw response."""
         last_exc: Exception | None = None
         for attempt in range(1 + self.max_retries):
             try:
@@ -125,14 +125,28 @@ class SyncHTTPClient:
                 continue
 
             _raise_for_error(response)
-            return response.json()
+            return response
 
-        # Should not reach here, but just in case
         if last_exc:
             raise last_exc
+        raise RuntimeError("unreachable")
+
+    def request(self, method: str, path: str, **kwargs: Any) -> Any:
+        if "params" in kwargs:
+            kwargs["params"] = _prepare_params(kwargs["params"])
+        return self._request_with_retry(method, path, **kwargs).json()
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         return self.request("GET", path, params=params or {})
+
+    def download(self, path: str, dest: Path, params: dict[str, Any] | None = None) -> Path:
+        """Download binary content to a file. Returns the destination path."""
+        response = self._request_with_retry(
+            "GET", path, params=_prepare_params(params) if params else {},
+        )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(response.content)
+        return dest
 
     def close(self) -> None:
         self._client.close()
@@ -160,12 +174,8 @@ class AsyncHTTPClient:
             },
         )
 
-    async def request(self, method: str, path: str, **kwargs: Any) -> Any:
-        import asyncio
-
-        if "params" in kwargs:
-            kwargs["params"] = _prepare_params(kwargs["params"])
-
+    async def _request_with_retry(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """Execute a request with retry logic. Returns the raw response."""
         last_exc: Exception | None = None
         for attempt in range(1 + self.max_retries):
             try:
@@ -193,13 +203,28 @@ class AsyncHTTPClient:
                 continue
 
             _raise_for_error(response)
-            return response.json()
+            return response
 
         if last_exc:
             raise last_exc
+        raise RuntimeError("unreachable")
+
+    async def request(self, method: str, path: str, **kwargs: Any) -> Any:
+        if "params" in kwargs:
+            kwargs["params"] = _prepare_params(kwargs["params"])
+        return (await self._request_with_retry(method, path, **kwargs)).json()
 
     async def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         return await self.request("GET", path, params=params or {})
+
+    async def download(self, path: str, dest: Path, params: dict[str, Any] | None = None) -> Path:
+        """Download binary content to a file. Returns the destination path."""
+        response = await self._request_with_retry(
+            "GET", path, params=_prepare_params(params) if params else {},
+        )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(response.content)
+        return dest
 
     async def close(self) -> None:
         await self._client.aclose()

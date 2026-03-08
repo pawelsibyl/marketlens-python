@@ -5,6 +5,7 @@ from typing import Any
 from marketlens._base import AsyncHTTPClient, SyncHTTPClient
 from marketlens._constants import DEFAULT_BASE_URL, DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT
 from marketlens.resources.events import AsyncEvents, Events
+from marketlens.resources.exports import AsyncExports, Exports
 from marketlens.resources.markets import AsyncMarkets, Markets
 from marketlens.resources.orderbook import AsyncOrderbook, Orderbook
 from marketlens.resources.series import AsyncSeriesResource, SeriesResource
@@ -36,6 +37,7 @@ class MarketLens:
         self.series = SeriesResource(self._http)
         self.orderbook = Orderbook(self._http, series=self.series, markets=self.markets, events=self.events)
         self.signals = Signals(self._http)
+        self.exports = Exports(self._http)
 
     def backtest(
         self,
@@ -104,6 +106,7 @@ class AsyncMarketLens:
         self.series = AsyncSeriesResource(self._http)
         self.orderbook = AsyncOrderbook(self._http, series=self.series, markets=self.markets, events=self.events)
         self.signals = AsyncSignals(self._http)
+        self.exports = AsyncExports(self._http)
 
     async def backtest(
         self,

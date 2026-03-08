@@ -156,6 +156,7 @@ book.depth_within("0.02")      # (bid_depth, ask_depth) within 2c of mid
 | `client.series` | `list()` `get()` `markets()` `walk()` `events()` |
 | `client.orderbook` | `get()` `history()` `metrics()` `walk()` |
 | `client.signals` | `surfaces()` `surface()` `history()` |
+| `client.exports` | `download()` `download_range()` |
 
 All list methods return auto-paginating iterators with `.to_list()` and `.to_dataframe()`.
 
@@ -164,6 +165,29 @@ df = client.markets.candles(market_id, resolution="1h").to_dataframe()
 trades = client.markets.trades(market_id, after=start, before=end).to_list()
 top = client.markets.list(status="active", sort="-liquidity", limit=5).first_page()
 ```
+
+## Bulk Data Export
+
+Download full-day Parquet exports of order book snapshots and deltas — one file per market per day, no pagination required.
+
+```python
+# Single day
+path = client.exports.download(market_id, table="deltas", date="2026-03-07")
+
+# Date range
+paths = client.exports.download_range(
+    market_id, table="snapshots", after="2026-03-01", before="2026-03-08",
+)
+```
+
+Files are saved to the current directory by default. Pass `path="./data"` to choose a destination. Returns `Path` objects pointing to the downloaded `.parquet` files.
+
+| Parameter | Description |
+|-----------|-------------|
+| `table` | `"snapshots"` or `"deltas"` |
+| `date` | `YYYY-MM-DD` (must be before today) |
+| `after` / `before` | Date range — inclusive start, exclusive end |
+| `path` | Output directory (default: `.`) |
 
 ## Async
 
