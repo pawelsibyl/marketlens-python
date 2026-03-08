@@ -42,6 +42,7 @@ class BacktestConfig:
     latency_ms: int = 50
     slippage_bps: int = 0
     limit_fill_rate: float = 0.1
+    queue_position: bool = False
 
 
 class _EngineCore:
@@ -59,6 +60,7 @@ class _EngineCore:
             max_fill_fraction=self._config.max_fill_fraction,
             slippage_bps=self._config.slippage_bps,
             limit_fill_rate=self._config.limit_fill_rate,
+            queue_position=self._config.queue_position,
         )
         self._latency_ms = self._config.latency_ms
         self._portfolio = Portfolio(self._config.initial_cash)
@@ -97,7 +99,7 @@ class _EngineCore:
 
     @property
     def open_orders(self) -> list[Order]:
-        return [o for o in self._open_orders if o.status == OrderStatus.OPEN]
+        return [o for o in self._open_orders if o.status in (OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED)]
 
     def submit_order(
         self,
@@ -150,22 +152,25 @@ class _EngineCore:
         else:
             order.status = OrderStatus.OPEN
             self._open_orders.append(order)
+            self._fill_sim.register_limit_order(order, self._current_book)
 
         return order
 
     def cancel_order(self, order: Order) -> None:
-        if order.status in (OrderStatus.OPEN, OrderStatus.PENDING):
+        if order.status in (OrderStatus.OPEN, OrderStatus.PENDING, OrderStatus.PARTIALLY_FILLED):
             order.status = OrderStatus.CANCELLED
+            self._fill_sim.unregister_order(order.id)
             self._open_orders = [o for o in self._open_orders if o.id != order.id]
             self._pending_orders = [(t, o) for t, o in self._pending_orders if o.id != order.id]
 
     def cancel_all_orders(self, *, market_id: str | None = None) -> None:
         remaining: list[Order] = []
         for o in self._open_orders:
-            if o.status == OrderStatus.OPEN and (
+            if o.status in (OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED) and (
                 market_id is None or o.market_id == market_id
             ):
                 o.status = OrderStatus.CANCELLED
+                self._fill_sim.unregister_order(o.id)
             else:
                 remaining.append(o)
         self._open_orders = remaining
@@ -198,6 +203,9 @@ class _EngineCore:
                     else:
                         order.status = OrderStatus.OPEN
                         self._open_orders.append(order)
+                        self._fill_sim.register_limit_order(
+                            order, self._books.get(order.market_id, self._current_book),
+                        )
                 except ValueError:
                     # Position no longer sufficient (e.g. duplicate sell from latency)
                     order.status = OrderStatus.CANCELLED
@@ -221,7 +229,7 @@ class _EngineCore:
     def _try_fill_limit_orders(self, trade: TradeEvent) -> list[Fill]:
         fills: list[Fill] = []
         for order in list(self._open_orders):
-            if order.status != OrderStatus.OPEN:
+            if order.status not in (OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED):
                 continue
             if order.market_id != self._current_market.id:  # type: ignore[union-attr]
                 continue
@@ -236,6 +244,7 @@ class _EngineCore:
             except ValueError:
                 order.status = OrderStatus.CANCELLED
                 self._open_orders = [o for o in self._open_orders if o.id != order.id]
+                self._fill_sim.unregister_order(order.id)
         return fills
 
     def _apply_fill(self, order: Order, fill: Fill) -> None:
@@ -262,6 +271,7 @@ class _EngineCore:
         if filled >= Decimal(order.size):
             order.status = OrderStatus.FILLED
             self._open_orders = [o for o in self._open_orders if o.id != order.id]
+            self._fill_sim.unregister_order(order.id)
         else:
             order.status = OrderStatus.PARTIALLY_FILLED
 
@@ -275,6 +285,7 @@ class _EngineCore:
                 and self._current_time >= order.cancel_after
             ):
                 order.status = OrderStatus.EXPIRED
+                self._fill_sim.unregister_order(order.id)
             else:
                 remaining.append(order)
         self._open_orders = remaining
@@ -293,6 +304,10 @@ class _EngineCore:
             self._try_fill_limit_orders(event)
             self._strategy.on_trade(self._ctx, market, book, event)
         elif isinstance(event, (SnapshotEvent, DeltaEvent)):
+            if isinstance(event, DeltaEvent):
+                self._fill_sim.notify_delta(market.id, event.price, event.size, event.side)
+            else:
+                self._fill_sim.notify_snapshot(market.id, book)
             if not first_book_seen:
                 self._strategy.on_market_start(self._ctx, market, book)
                 is_first = True

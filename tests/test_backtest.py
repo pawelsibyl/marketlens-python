@@ -22,7 +22,7 @@ from marketlens.backtest import (
     StrategyContext,
     ZeroFeeModel,
 )
-from marketlens.backtest._fills import FillSimulator
+from marketlens.backtest._fills import FillSimulator, QueuePositionTracker, _order_resting_level
 from marketlens.backtest._portfolio import Portfolio
 from marketlens.types.orderbook import OrderBook
 
@@ -1212,3 +1212,206 @@ class TestLimitFillRate:
         # TRADE_SELL size=50, fill_rate=0.5 → 25 shares filled
         fill_size = Decimal(result.trades_df()["size"].iloc[0])
         assert fill_size == Decimal("25.0000")
+
+
+# ── Queue Position Tracker Tests ─────────────────────────────
+
+class TestQueuePositionTracker:
+    def _order(self, side, size, limit_price, order_id="ord-1"):
+        return Order(
+            id=order_id, market_id="m1", side=side,
+            order_type=OrderType.LIMIT, size=size, limit_price=limit_price,
+            submitted_at=1000, status=OrderStatus.OPEN,
+        )
+
+    def test_register_sets_queue_from_depth(self):
+        """BUY_YES at 0.65, book has 200 at bid 0.65 → queue_ahead=200."""
+        tracker = QueuePositionTracker()
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        tracker.register(order, book)
+        state = tracker._states["ord-1"]
+        assert state.queue_ahead == Decimal("200")
+        assert state.price == "0.6500"
+        assert state.book_side == "BUY"
+
+    def test_trade_drains_queue(self):
+        """Trade of 50 drains queue from 200→150, no fill."""
+        tracker = QueuePositionTracker()
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        tracker.register(order, book)
+
+        available = tracker.on_trade("ord-1", Decimal("50"), "0.6500", "SELL")
+        assert available == Decimal("0")
+        assert tracker._states["ord-1"].queue_ahead == Decimal("150")
+
+    def test_trade_fills_when_queue_exhausted(self):
+        """Queue=50, trade=100 → fill_available=50, queue=0."""
+        tracker = QueuePositionTracker()
+        book = _book([("0.6500", "50.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "100.0000", "0.6500")
+        tracker.register(order, book)
+
+        available = tracker.on_trade("ord-1", Decimal("100"), "0.6500", "SELL")
+        assert available == Decimal("50")
+        assert tracker._states["ord-1"].queue_ahead == Decimal("0")
+
+    def test_cancel_proportional_drain(self):
+        """queue=200, level=1000, delta decreases to 800, cancel_portion=200, proportion=0.2, drain=40."""
+        tracker = QueuePositionTracker()
+        book = _book([("0.6500", "1000.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        tracker.register(order, book)
+        # Manually set queue_ahead to 200 (as if we're 200 deep in a 1000-size level)
+        tracker._states["ord-1"].queue_ahead = Decimal("200")
+
+        tracker.on_delta("m1", "0.6500", Decimal("800"), "BUY")
+        # decrease = 200, proportion = 200/1000 = 0.2
+        # queue_ahead -= 200 * 0.2 = 40 → 200 - 40 = 160
+        assert tracker._states["ord-1"].queue_ahead == Decimal("160")
+
+    def test_trade_then_delta_both_drain(self):
+        """Trade front-drains, then delta proportionally drains the full decrease."""
+        tracker = QueuePositionTracker()
+        book = _book([("0.6500", "1000.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        tracker.register(order, book)
+
+        # Trade drains 50 from front
+        tracker.on_trade("ord-1", Decimal("50"), "0.6500", "SELL")
+        assert tracker._states["ord-1"].queue_ahead == Decimal("950")
+
+        # Delta: level goes from 1000 to 920 (decrease of 80)
+        # proportion = 950/1000 = 0.95
+        # queue_ahead -= 80 * 0.95 = 76 → 950 - 76 = 874
+        tracker.on_delta("m1", "0.6500", Decimal("920"), "BUY")
+        assert tracker._states["ord-1"].queue_ahead == Decimal("874")
+
+    def test_level_empties_queue_zeroes(self):
+        """Level goes to 0 → queue_ahead → 0."""
+        tracker = QueuePositionTracker()
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        tracker.register(order, book)
+
+        tracker.on_delta("m1", "0.6500", Decimal("0"), "BUY")
+        assert tracker._states["ord-1"].queue_ahead == Decimal("0")
+
+    def test_level_increase_no_change(self):
+        """New orders behind you, queue unchanged."""
+        tracker = QueuePositionTracker()
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        tracker.register(order, book)
+
+        tracker.on_delta("m1", "0.6500", Decimal("500"), "BUY")
+        assert tracker._states["ord-1"].queue_ahead == Decimal("200")
+        assert tracker._states["ord-1"].level_size == Decimal("500")
+
+    def test_snapshot_resyncs(self):
+        """Snapshot clamps queue_ahead to level_size."""
+        tracker = QueuePositionTracker()
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        tracker.register(order, book)
+
+        # Simulate a book where the level shrank
+        new_book = _book([("0.6500", "50.0000")], [("0.6700", "100.0000")])
+        tracker.on_snapshot("m1", new_book)
+        assert tracker._states["ord-1"].queue_ahead == Decimal("50")
+        assert tracker._states["ord-1"].level_size == Decimal("50")
+
+    def test_unregister_stops_tracking(self):
+        """After unregister, on_trade returns 0."""
+        tracker = QueuePositionTracker()
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        tracker.register(order, book)
+        tracker.unregister("ord-1")
+
+        available = tracker.on_trade("ord-1", Decimal("300"), "0.6500", "SELL")
+        assert available == Decimal("0")
+        assert "ord-1" not in tracker._states
+
+    def test_buy_no_resting_level(self):
+        """BUY_NO at 0.35 → rests SELL side at 0.65."""
+        order = self._order(OrderSide.BUY_NO, "50.0000", "0.3500")
+        price, side = _order_resting_level(order)
+        assert price == "0.6500"
+        assert side == "SELL"
+
+    def test_sell_no_resting_level(self):
+        """SELL_NO at 0.35 → rests BUY side at 0.65."""
+        order = self._order(OrderSide.SELL_NO, "50.0000", "0.3500")
+        price, side = _order_resting_level(order)
+        assert price == "0.6500"
+        assert side == "BUY"
+
+    def test_trade_wrong_price_no_drain(self):
+        """Trade at different price returns 0."""
+        tracker = QueuePositionTracker()
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        tracker.register(order, book)
+
+        available = tracker.on_trade("ord-1", Decimal("100"), "0.6400", "SELL")
+        assert available == Decimal("0")
+        assert tracker._states["ord-1"].queue_ahead == Decimal("200")
+
+
+# ── Queue Position Fill Integration Tests ─────────────────────
+
+class TestQueuePositionFills:
+    def _sim(self, **kwargs):
+        return FillSimulator(ZeroFeeModel(), **kwargs)
+
+    def _order(self, side, size, limit_price, order_id="ord-1"):
+        return Order(
+            id=order_id, market_id="m1", side=side,
+            order_type=OrderType.LIMIT, size=size, limit_price=limit_price,
+            submitted_at=1000, status=OrderStatus.OPEN,
+        )
+
+    def _trade(self, side, price, size="50.0000"):
+        return TradeEvent(type="trade", t=2000, id="t1", price=price, size=size, side=side)
+
+    def test_default_uses_limit_fill_rate(self):
+        """queue_position=False uses existing limit_fill_rate logic."""
+        sim = self._sim(limit_fill_rate=0.5)
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "200.0000", "0.6500")
+        trade = self._trade("SELL", "0.6500", size="100.0000")
+        fill = sim.try_fill_limit_order(order, book, trade, 2000)
+        assert fill is not None
+        assert fill.size == "50.0000"  # 100 * 0.5
+
+    def test_queue_fills_after_drain(self):
+        """Order placed with queue 200, trades drain to 0, next trade fills."""
+        sim = self._sim(queue_position=True)
+        book = _book([("0.6500", "200.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        sim.register_limit_order(order, book)
+
+        # Trade 1: drain 200, queue goes to 0
+        trade1 = TradeEvent(type="trade", t=2000, id="t1", price="0.6500", size="200.0000", side="SELL")
+        fill1 = sim.try_fill_limit_order(order, book, trade1, 2000)
+        assert fill1 is None  # exactly drained, no overflow
+
+        # Trade 2: queue is 0, this trade overflows → fill
+        trade2 = TradeEvent(type="trade", t=3000, id="t2", price="0.6500", size="100.0000", side="SELL")
+        fill2 = sim.try_fill_limit_order(order, book, trade2, 3000)
+        assert fill2 is not None
+        assert fill2.size == "50.0000"  # capped by remaining order size
+
+    def test_queue_no_fill_while_queued(self):
+        """Trades not enough to drain queue → no fill."""
+        sim = self._sim(queue_position=True)
+        book = _book([("0.6500", "500.0000")], [("0.6700", "100.0000")])
+        order = self._order(OrderSide.BUY_YES, "50.0000", "0.6500")
+        sim.register_limit_order(order, book)
+
+        # Trade of 100 at correct price: queue 500→400, no fill
+        trade = self._trade("SELL", "0.6500", size="100.0000")
+        fill = sim.try_fill_limit_order(order, book, trade, 2000)
+        assert fill is None

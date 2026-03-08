@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,104 @@ _ZERO = Decimal("0")
 _ONE = Decimal("1")
 
 
+@dataclass
+class _QueueState:
+    market_id: str       # which market this order belongs to
+    price: str           # YES-normalized price where order rests
+    book_side: str       # "BUY" or "SELL" — side of book the order rests on
+    queue_ahead: Decimal  # shares ahead in queue
+    level_size: Decimal   # last known total size at this price level
+
+
+def _order_resting_level(order: Order) -> tuple[str, str]:
+    """Return (yes_price, book_side) for where a limit order rests."""
+    price = Decimal(order.limit_price)
+    if order.side == OrderSide.BUY_YES:
+        return str(price.quantize(_FOUR)), "BUY"
+    elif order.side == OrderSide.SELL_YES:
+        return str(price.quantize(_FOUR)), "SELL"
+    elif order.side == OrderSide.BUY_NO:
+        return str((_ONE - price).quantize(_FOUR)), "SELL"
+    else:  # SELL_NO
+        return str((_ONE - price).quantize(_FOUR)), "BUY"
+
+
+def _depth_at_price(book: OrderBook, price: str, side: str) -> Decimal:
+    """Look up total size at a specific price level."""
+    levels = book.bids if side == "BUY" else book.asks
+    for level in levels:
+        if level.price == price:
+            return Decimal(level.size)
+    return _ZERO
+
+
+class QueuePositionTracker:
+    """Tracks queue-ahead position for open limit orders."""
+
+    def __init__(self) -> None:
+        self._states: dict[str, _QueueState] = {}
+
+    def register(self, order: Order, book: OrderBook) -> None:
+        price, book_side = _order_resting_level(order)
+        depth = _depth_at_price(book, price, book_side)
+        self._states[order.id] = _QueueState(
+            market_id=order.market_id,
+            price=price, book_side=book_side,
+            queue_ahead=depth, level_size=depth,
+        )
+
+    def unregister(self, order_id: str) -> None:
+        self._states.pop(order_id, None)
+
+    def on_trade(self, order_id: str, trade_size: Decimal, trade_price: str, trade_side: str) -> Decimal:
+        """Drain queue for a specific order on a matching trade.
+        Returns fill-available size (0 if still queued)."""
+        state = self._states.get(order_id)
+        if state is None:
+            return _ZERO
+
+        # Trade side is taker side. SELL taker consumes BUY book side, and vice versa.
+        consumed_side = "BUY" if trade_side == "SELL" else "SELL"
+        if state.book_side != consumed_side or state.price != trade_price:
+            return _ZERO
+
+        state.queue_ahead -= trade_size
+        if state.queue_ahead < _ZERO:
+            available = min(-state.queue_ahead, trade_size)
+            state.queue_ahead = _ZERO
+            return available
+        return _ZERO
+
+    def on_delta(self, market_id: str, price: str, new_size: Decimal, side: str) -> None:
+        """Update queue positions on book level change.
+
+        Any decrease is proportionally attributed to queue positions — we
+        cannot reliably separate trade-caused from cancel-caused decreases
+        because delta events typically arrive before their corresponding
+        trade events (~65-75% of the time, median ~7-28ms ahead).
+        """
+        norm_price = str(Decimal(price).quantize(_FOUR))
+        for state in self._states.values():
+            if state.market_id != market_id or state.price != norm_price or state.book_side != side:
+                continue
+
+            old_size = state.level_size
+            if new_size < old_size and old_size > _ZERO:
+                decrease = old_size - new_size
+                proportion = state.queue_ahead / old_size
+                state.queue_ahead = max(_ZERO, state.queue_ahead - decrease * proportion)
+
+            state.level_size = new_size
+
+    def on_snapshot(self, market_id: str, book: OrderBook) -> None:
+        """Re-sync level sizes from full book snapshot."""
+        for state in self._states.values():
+            if state.market_id != market_id:
+                continue
+            state.level_size = _depth_at_price(book, state.price, state.book_side)
+            state.queue_ahead = min(state.queue_ahead, state.level_size)
+
+
 class FillSimulator:
     def __init__(
         self,
@@ -24,12 +123,30 @@ class FillSimulator:
         max_fill_fraction: float = 1.0,
         slippage_bps: int = 0,
         limit_fill_rate: float = 1.0,
+        queue_position: bool = False,
     ) -> None:
         self._fee_model = fee_model
         self._taker_only = taker_only
         self._max_fill_fraction = Decimal(str(max_fill_fraction))
         self._slippage_bps = Decimal(str(slippage_bps))
         self._limit_fill_rate = Decimal(str(limit_fill_rate))
+        self._tracker = QueuePositionTracker() if queue_position else None
+
+    def register_limit_order(self, order: Order, book: OrderBook) -> None:
+        if self._tracker is not None:
+            self._tracker.register(order, book)
+
+    def unregister_order(self, order_id: str) -> None:
+        if self._tracker is not None:
+            self._tracker.unregister(order_id)
+
+    def notify_delta(self, market_id: str, price: str, new_size: str, side: str) -> None:
+        if self._tracker is not None:
+            self._tracker.on_delta(market_id, price, Decimal(new_size), side)
+
+    def notify_snapshot(self, market_id: str, book: OrderBook) -> None:
+        if self._tracker is not None:
+            self._tracker.on_snapshot(market_id, book)
 
     def try_fill_market_order(
         self, order: Order, book: OrderBook, timestamp: int,
@@ -126,7 +243,13 @@ class FillSimulator:
         if not triggered:
             return None
 
-        available = trade_size * self._limit_fill_rate
+        if self._tracker is not None:
+            trade_price_norm = str(trade_price.quantize(_FOUR))
+            available = self._tracker.on_trade(order.id, trade_size, trade_price_norm, trade.side)
+            if available <= _ZERO:
+                return None
+        else:
+            available = trade_size * self._limit_fill_rate
         fill_size = min(remaining, available).quantize(_FOUR)
         if fill_size <= _ZERO:
             return None

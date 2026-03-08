@@ -52,6 +52,7 @@ class MarketLens:
         latency_ms: int = 50,
         slippage_bps: int = 0,
         limit_fill_rate: float = 0.1,
+        queue_position: bool = False,
         **params: Any,
     ) -> Any:
         """Run a backtest on a market, series, or list of markets/series.
@@ -67,6 +68,7 @@ class MarketLens:
             latency_ms=latency_ms,
             slippage_bps=slippage_bps,
             limit_fill_rate=limit_fill_rate,
+            queue_position=queue_position,
         )
         engine = BacktestEngine(strategy, config)
         return engine.run(self, id, after=after, before=before, **params)
@@ -121,6 +123,7 @@ class AsyncMarketLens:
         latency_ms: int = 50,
         slippage_bps: int = 0,
         limit_fill_rate: float = 0.1,
+        queue_position: bool = False,
         **params: Any,
     ) -> Any:
         """Run a backtest on a market, series, or list of markets/series (async)."""
@@ -133,6 +136,7 @@ class AsyncMarketLens:
             latency_ms=latency_ms,
             slippage_bps=slippage_bps,
             limit_fill_rate=limit_fill_rate,
+            queue_position=queue_position,
         )
         engine = AsyncBacktestEngine(strategy, config)
         return await engine.run(self, id, after=after, before=before, **params)

@@ -105,7 +105,8 @@ For structured products and multi-market backtests, `ctx.books` gives the latest
 |-----------|---------|-------------|
 | `initial_cash` | *required* | Starting capital (e.g. `"10000.0000"`) — buy orders exceeding cash are cancelled |
 | `latency_ms` | `50` | Order-to-fill delay — orders fill against the book state N ms after submission |
-| `limit_fill_rate` | `0.1` | Fraction of historical trade size that fills your limit order (queue position) |
+| `queue_position` | `False` | CLOB-realistic queue modeling — tracks each order's position in the book and fills only when queue-ahead is fully drained by trades and cancellations |
+| `limit_fill_rate` | `0.1` | Flat fraction of trade size that fills your limit order. Ignored when `queue_position=True` |
 | `slippage_bps` | `0` | Extra price penalty on market order fills (on top of L2 book walk) |
 | `fees` | `"polymarket"` | Fee model — auto-detects per category (crypto vs sports). Set to `None` for zero fees |
 | `max_fill_fraction` | `1.0` | Max fraction of each book level consumed per order |

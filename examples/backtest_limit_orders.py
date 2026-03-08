@@ -1,4 +1,10 @@
-"""Market-making with limit orders — post around the midpoint, exit on fill."""
+"""Market-making with limit orders — post around the midpoint, exit on fill.
+
+Uses queue_position=True for CLOB-realistic fill simulation: each limit order
+tracks its position in the book queue and only fills when queue-ahead is fully
+drained by trades and cancellations. For a simpler (but less accurate) model,
+replace queue_position with limit_fill_rate (e.g. limit_fill_rate=0.2).
+"""
 
 from datetime import datetime, timezone
 
@@ -24,7 +30,7 @@ result = client.backtest(
     before=datetime(2026, 3, 5, 10, 5, tzinfo=timezone.utc),
     initial_cash="10000.0000",
     include_trades=True,
-    limit_fill_rate=0.2,
+    queue_position=True,
 )
 print(result)
 print(result.orders_df().to_string())
