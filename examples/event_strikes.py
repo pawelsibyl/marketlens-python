@@ -13,7 +13,7 @@ client = MarketLens()
 walk = client.orderbook.walk(
     "ethereum-multi-strikes-weekly",
     after=datetime(2026, 3, 5, 10, 0, tzinfo=timezone.utc),
-    before=datetime(2026, 3, 5, 10, 30, tzinfo=timezone.utc),
+    before=datetime(2026, 3, 5, 10, 5, tzinfo=timezone.utc),
 )
 
 last_event_id = None

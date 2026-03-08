@@ -78,6 +78,7 @@ class SettlementRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     market_id: str
+    series_id: str | None = None
     side: PositionSide
     shares: str
     avg_entry_price: str

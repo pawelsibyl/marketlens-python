@@ -61,7 +61,7 @@ Walk properties available during iteration:
 
 ## Backtesting
 
-Define a strategy by subclassing `Strategy` and implementing event hooks. Run it against any market, rolling series, or structured product — the engine replays L2 book data tick-by-tick with realistic execution simulation.
+Define a strategy by subclassing `Strategy` and implementing event hooks. Run it against any market, rolling series, structured product, or multiple series at once — the engine replays L2 book data tick-by-tick with realistic execution simulation.
 
 ```python
 from marketlens.backtest import Strategy
@@ -71,11 +71,19 @@ class BuyOnTightSpread(Strategy):
         if ctx.position().side == "FLAT" and book.spread_bps() and book.spread_bps() < 200:
             ctx.buy_yes(size="100")
 
+# Single series
 result = client.backtest(BuyOnTightSpread(), "btc-up-or-down-5m",
                          initial_cash="10000.0000",
                          after="2026-03-05T10:00Z", before="2026-03-05T10:05Z")
+
+# Multi-series portfolio — shared capital across assets
+result = client.backtest(BuyOnTightSpread(),
+                         ["btc-up-or-down-5m", "eth-up-or-down-5m", "sol-up-or-down-5m"],
+                         initial_cash="10000.0000",
+                         after="2026-03-05T10:00Z", before="2026-03-05T10:30Z")
 result.trades_df()       # per-fill DataFrame
 result.settlements_df()  # per-market settlement P&L
+result.by_series()       # per-series PnL attribution
 result.equity_df()       # equity curve over time
 ```
 
@@ -88,10 +96,8 @@ result.equity_df()       # equity curve over time
 | `on_fill(ctx, market, fill)` | Your order is filled |
 | `on_market_start(ctx, market, book)` | A new market begins in the walk |
 | `on_market_end(ctx, market)` | A market's data is exhausted, before settlement |
-| `on_event_start(ctx, event, markets)` | A new event begins (structured products) |
-| `on_event_end(ctx, event)` | All markets in an event are exhausted |
 
-For structured product backtests, `ctx.event_books` gives the latest book for every sibling strike — the same cross-strike view as `walk.books`.
+For structured products and multi-market backtests, `ctx.books` gives the latest book for every active market — the same cross-market view as `walk.books`.
 
 ### Execution realism
 
@@ -205,16 +211,14 @@ async with AsyncMarketLens() as client:
 
 | Example | Description |
 |---------|-------------|
-| [`single_market_replay.py`](examples/single_market_replay.py) | Replay one market's L2 book and summarize via DataFrame |
 | [`execution_cost.py`](examples/execution_cost.py) | Live book depth, spread, impact and slippage across order sizes |
 | [`microstructure.py`](examples/microstructure.py) | Rolling series feature matrix — does imbalance predict outcome? |
 | [`implied_surfaces.py`](examples/implied_surfaces.py) | Implied probability surfaces — survival, density, and barrier |
 | [`event_strikes.py`](examples/event_strikes.py) | Structured product walk — parallel books with live surface fitting |
-| [`backtest_basic.py`](examples/backtest_basic.py) | Minimal backtest — buy on tight spread, settle at resolution |
-| [`series_backtest.py`](examples/series_backtest.py) | Rolling series backtest with spread-timing strategy |
-| [`backtest_imbalance.py`](examples/backtest_imbalance.py) | Imbalance signal with early exit before settlement |
+| [`backtest_basic.py`](examples/backtest_basic.py) | Single-series backtest — spread-timing strategy with settlement |
 | [`backtest_limit_orders.py`](examples/backtest_limit_orders.py) | Market-making with limit orders and on_fill exit |
 | [`backtest_surface.py`](examples/backtest_surface.py) | Surface mispricing — PAVA regression identifies underpriced strikes |
+| [`backtest_portfolio.py`](examples/backtest_portfolio.py) | Multi-series portfolio — imbalance strategy across three assets |
 
 ## License
 

@@ -149,7 +149,7 @@ class Portfolio:
 
         self._total_fees += fee
 
-    def settle_market(self, market: Market, timestamp: int) -> SettlementRecord | None:
+    def settle_market(self, market: Market, timestamp: int, *, series_id: str | None = None) -> SettlementRecord | None:
         pos = self._get_or_create(market.id)
         if pos.side == PositionSide.FLAT:
             return None
@@ -171,6 +171,7 @@ class Portfolio:
 
         return SettlementRecord(
             market_id=market.id,
+            series_id=series_id,
             side=pre_side,
             shares=str(pre_shares.quantize(_FOUR)),
             avg_entry_price=str(pre_entry.quantize(_FOUR)),

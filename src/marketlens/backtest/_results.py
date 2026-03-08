@@ -183,6 +183,7 @@ class BacktestResult:
         rows = [
             {
                 "market_id": s.market_id,
+                "series_id": s.series_id,
                 "side": s.side.value,
                 "shares": float(s.shares),
                 "avg_entry_price": float(s.avg_entry_price),
@@ -211,6 +212,50 @@ class BacktestResult:
         df["equity"] = df["equity"].astype(float)
         df["pnl"] = df["pnl"].astype(float)
         return df.set_index("t")
+
+    def by_series(self) -> dict[str | None, dict]:
+        """Per-series breakdown of backtest results.
+
+        Returns a dict keyed by ``series_id`` (or ``None`` for unseries'd markets),
+        with each value containing aggregated stats for that series.
+        """
+        from collections import defaultdict
+
+        groups: dict[str | None, list[SettlementRecord]] = defaultdict(list)
+        for s in self._settlements:
+            groups[s.series_id].append(s)
+
+        result: dict[str | None, dict] = {}
+        for sid, settlements in groups.items():
+            net_pnls = [(Decimal(s.pnl) - Decimal(s.fees)) for s in settlements]
+            total_pnl = sum(net_pnls, _ZERO)
+            total_fees = sum(Decimal(s.fees) for s in settlements)
+            wins = [n for n in net_pnls if n > 0]
+            losses = [n for n in net_pnls if n < 0]
+            win_rate = len(wins) / len(net_pnls) if net_pnls else 0.0
+            gross_profit = sum(wins, _ZERO)
+            gross_loss = abs(sum(losses, _ZERO))
+            if gross_loss > 0:
+                profit_factor = float(gross_profit / gross_loss)
+            elif gross_profit > 0:
+                profit_factor = float("inf")
+            else:
+                profit_factor = 0.0
+
+            market_ids = {s.market_id for s in settlements}
+            total_trades = len([
+                f for f in self._fills if f.market_id in market_ids
+            ])
+
+            result[sid] = {
+                "total_pnl": str(total_pnl.quantize(_FOUR)),
+                "total_fees": str(total_fees.quantize(_FOUR)),
+                "win_rate": win_rate,
+                "profit_factor": profit_factor,
+                "markets_traded": len(market_ids),
+                "total_trades": total_trades,
+            }
+        return result
 
     def to_dataframe(self):
         """Alias for ``settlements_df()`` (SDK convention)."""

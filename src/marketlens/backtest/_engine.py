@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, AsyncIterator, Iterator
 
 from marketlens.exceptions import NotFoundError
 from marketlens.backtest._fees import FeeModel, PolymarketFeeModel, ZeroFeeModel
@@ -19,9 +19,12 @@ from marketlens.backtest._types import (
     PositionSide,
     SettlementRecord,
 )
-from marketlens.helpers.merge import async_merge_replays, merge_replays
+from marketlens.helpers.merge import (
+    async_merge_streams,
+    merge_streams,
+)
 from marketlens.helpers.replay import AsyncOrderBookReplay, OrderBookReplay
-from marketlens.types.history import DeltaEvent, SnapshotEvent, TradeEvent
+from marketlens.types.history import DeltaEvent, HistoryEvent, SnapshotEvent, TradeEvent
 from marketlens.types.market import Market
 from marketlens.types.orderbook import OrderBook
 
@@ -70,8 +73,9 @@ class _EngineCore:
         self._current_market: Market | None = None
         self._current_book: OrderBook | None = None
         self._current_time: int = 0
-        self._current_event: Any = None
-        self._event_books: dict[str, OrderBook] = {}
+        self._books: dict[str, OrderBook] = {}
+        self._market_series: dict[str, str] = {}  # market_id → series_id (for settlement attribution)
+        self._market_group: dict[str, str] = {}    # market_id → group key (for sequential slot tracking)
 
         self._ctx = StrategyContext(self)
 
@@ -100,15 +104,17 @@ class _EngineCore:
         side: OrderSide,
         size: str,
         *,
+        market_id: str | None = None,
         limit_price: str | None = None,
         cancel_after: int | None = None,
     ) -> Order:
+        target = market_id or self._current_market.id  # type: ignore[union-attr]
         self._order_counter += 1
         order_type = OrderType.LIMIT if limit_price is not None else OrderType.MARKET
 
         # Validate sell orders
         if side in (OrderSide.SELL_YES, OrderSide.SELL_NO):
-            pos = self._portfolio.position(self._current_market.id)  # type: ignore[union-attr]
+            pos = self._portfolio.position(target)
             expected_side = PositionSide.YES if side == OrderSide.SELL_YES else PositionSide.NO
             held = Decimal(pos.shares) if pos.side == expected_side else Decimal("0")
             needed = Decimal(size)
@@ -126,7 +132,7 @@ class _EngineCore:
 
         order = Order(
             id=f"ord-{self._order_counter}",
-            market_id=self._current_market.id,  # type: ignore[union-attr]
+            market_id=target,
             side=side,
             order_type=order_type,
             size=size,
@@ -200,8 +206,9 @@ class _EngineCore:
         self._pending_orders = still_pending
 
     def _fill_market_order(self, order: Order) -> None:
+        book = self._books.get(order.market_id, self._current_book)
         fill = self._fill_sim.try_fill_market_order(
-            order, self._current_book, self._current_time,  # type: ignore[arg-type]
+            order, book, self._current_time,  # type: ignore[arg-type]
         )
         if fill is None:
             order.status = OrderStatus.CANCELLED
@@ -277,6 +284,7 @@ class _EngineCore:
         self._current_market = market
         self._current_book = book
         self._current_time = event.t
+        self._books[market.id] = book
         is_first = False
 
         self._activate_pending_orders(market_id=market.id)
@@ -312,9 +320,65 @@ class _EngineCore:
 
         if market.status == "resolved" and market.winning_outcome_index is not None:
             timestamp = market.resolved_at or market.close_time or self._current_time
-            record = self._portfolio.settle_market(market, timestamp)
+            series_id = self._market_series.get(market.id)
+            record = self._portfolio.settle_market(market, timestamp, series_id=series_id)
             if record is not None:
                 self._settlements.append(record)
+
+        self._books.pop(market.id, None)
+
+    def _run_merged(
+        self,
+        streams: list[Iterator[tuple[Market, HistoryEvent, OrderBook]]],
+    ) -> None:
+        first_book_seen: set[str] = set()
+        active: dict[str, Market] = {}  # grouping_key → current Market
+
+        for market, event, book in merge_streams(streams):
+            key = self._market_group.get(market.id, market.id)
+
+            # Market transition: previous market in this slot ended
+            prev = active.get(key)
+            if prev is not None and prev.id != market.id:
+                self._finalize_market(prev)
+            active[key] = market
+
+            if self._auto_fees:
+                self._fill_sim._fee_model = PolymarketFeeModel.for_category(market.category)
+
+            seen = market.id in first_book_seen
+            if self._process_event(event, book, market, seen):
+                first_book_seen.add(market.id)
+            elif not seen and isinstance(event, (SnapshotEvent, DeltaEvent)):
+                first_book_seen.add(market.id)
+
+        # Finalize remaining
+        for m in active.values():
+            self._finalize_market(m)
+
+    def _make_market_stream(
+        self,
+        client: Any,
+        markets: list[Market],
+        *,
+        after: Any = None,
+        before: Any = None,
+    ) -> Iterator[tuple[Market, HistoryEvent, OrderBook]]:
+        """Chain sequential markets from one series into a single lazy event stream."""
+        history_params: dict[str, Any] = {}
+        if self._config.include_trades:
+            history_params["include_trades"] = True
+
+        for market in markets:
+            history = client.orderbook.history(
+                market.id,
+                after=after or market.open_time,
+                before=before or market.close_time,
+                **history_params,
+            )
+            replay = OrderBookReplay(history, market_id=market.id, platform=market.platform)
+            for event, book in replay:
+                yield market, event, book
 
     def _build_result(self) -> BacktestResult:
         return BacktestResult(
@@ -324,23 +388,29 @@ class _EngineCore:
             equity_curve=self._equity_curve,
             cash_rejected=self._cash_rejected,
         )
-        
+
 
 
 class BacktestEngine(_EngineCore):
     def run(
         self,
         client: Any,
-        id: str,
+        id: str | list[str],
         *,
         after: Any = None,
         before: Any = None,
         **params: Any,
     ) -> BacktestResult:
+        if isinstance(id, list):
+            streams = self._resolve_list(client, id, after=after, before=before, **params)
+            self._run_merged(streams)
+            return self._build_result()
+
         # 1. Try as a market UUID
         try:
             market = client.markets.get(id)
-            self._run_single_market(client, market, after=after, before=before)
+            self._market_series[market.id] = market.series_id or market.id
+            self._run_merged([self._make_market_stream(client, [market], after=after, before=before)])
             return self._build_result()
         except NotFoundError:
             pass
@@ -353,21 +423,16 @@ class BacktestEngine(_EngineCore):
 
         if series is not None:
             if series.structured_type:
-                event_params = dict(params)
-                if after is not None:
-                    event_params["end_after"] = after
-                if before is not None:
-                    event_params["start_before"] = before
-                events = client.series.events(id, **event_params).to_list()
-                for evt in events:
-                    event_markets = client.events.markets(evt.id).to_list()
-                    self._run_event_markets(
-                        client, evt, event_markets, after=after, before=before,
-                    )
+                streams = self._resolve_structured(
+                    client, id, series, after=after, before=before, **params,
+                )
+                self._run_merged(streams)
             elif series.is_rolling:
                 markets = list(client.series.walk(id, after=after, before=before, **params))
-                for market in markets:
-                    self._run_single_market(client, market)
+                for m in markets:
+                    self._market_series[m.id] = series.id
+                    self._market_group[m.id] = series.id
+                self._run_merged([self._make_market_stream(client, markets, after=after, before=before)])
             else:
                 raise ValueError(
                     f"Series '{series.title}' is neither rolling nor structured."
@@ -377,93 +442,110 @@ class BacktestEngine(_EngineCore):
         # 3. Fallback: condition ID
         found = client.markets.list(condition_id=id).to_list()
         if found:
-            self._run_single_market(client, found[0], after=after, before=before)
+            self._market_series[found[0].id] = found[0].series_id or found[0].id
+            self._run_merged([self._make_market_stream(client, [found[0]], after=after, before=before)])
             return self._build_result()
 
         raise NotFoundError(404, "NOT_FOUND", f"No market or series found for '{id}'")
 
-    def _run_single_market(
-        self, client: Any, market: Market, *, after: Any = None, before: Any = None,
-    ) -> None:
-        self._current_market = market
-        if self._auto_fees:
-            self._fill_sim._fee_model = PolymarketFeeModel.for_category(market.category)
-        history_params: dict[str, Any] = {}
-        if self._config.include_trades:
-            history_params["include_trades"] = True
+    def _resolve_list(
+        self,
+        client: Any,
+        ids: list[str],
+        *,
+        after: Any = None,
+        before: Any = None,
+        **params: Any,
+    ) -> list[Iterator[tuple[Market, HistoryEvent, OrderBook]]]:
+        streams: list[Iterator[tuple[Market, HistoryEvent, OrderBook]]] = []
+        for item_id in ids:
+            # Try market UUID
+            try:
+                market = client.markets.get(item_id)
+                self._market_series[market.id] = market.series_id or market.id
+                streams.append(self._make_market_stream(client, [market], after=after, before=before))
+                continue
+            except NotFoundError:
+                pass
 
-        history = client.orderbook.history(
-            market.id,
-            after=after or market.open_time,
-            before=before or market.close_time,
-            **history_params,
-        )
-        replay = OrderBookReplay(history, market_id=market.id, platform=market.platform)
+            # Try series
+            series = client.series.get(item_id)
+            if series.structured_type:
+                streams.extend(self._resolve_structured(
+                    client, item_id, series, after=after, before=before, **params,
+                ))
+            elif series.is_rolling:
+                markets = list(client.series.walk(item_id, after=after, before=before, **params))
+                for m in markets:
+                    self._market_series[m.id] = series.id
+                    self._market_group[m.id] = series.id
+                streams.append(self._make_market_stream(client, markets, after=after, before=before))
+            else:
+                raise ValueError(
+                    f"Series '{series.title}' is neither rolling nor structured."
+                )
 
-        first_book_seen = False
-        for event, book in replay:
-            if self._process_event(event, book, market, first_book_seen):
-                first_book_seen = True
-            elif not first_book_seen and isinstance(event, (SnapshotEvent, DeltaEvent)):
-                first_book_seen = True
+        return streams
 
-        self._finalize_market(market)
+    def _resolve_structured(
+        self,
+        client: Any,
+        series_id: str,
+        series: Any,
+        *,
+        after: Any = None,
+        before: Any = None,
+        **params: Any,
+    ) -> list[Iterator[tuple[Market, HistoryEvent, OrderBook]]]:
+        """Resolve a structured series into per-market streams."""
+        from marketlens._base import _coerce_timestamp
 
-    def _run_event_markets(
-        self, client: Any, evt: Any, event_markets: list[Market],
-        *, after: Any = None, before: Any = None,
-    ) -> None:
-        self._current_event = evt
-        self._event_books = {}
-        self._strategy.on_event_start(self._ctx, evt, event_markets)
+        event_params = dict(params)
+        if after is not None:
+            event_params["end_after"] = after
+        if before is not None:
+            event_params["start_before"] = before
+        events = client.series.events(series_id, **event_params).to_list()
 
-        history_params: dict[str, Any] = {}
-        if self._config.include_trades:
-            history_params["include_trades"] = True
+        after_ms = _coerce_timestamp(after) if after is not None else None
+        before_ms = _coerce_timestamp(before) if before is not None else None
 
-        replays: list[tuple[Market, OrderBookReplay]] = []
-        for m in event_markets:
-            history = client.orderbook.history(
-                m.id,
-                after=after or m.open_time,
-                before=before or m.close_time,
-                **history_params,
-            )
-            replays.append((m, OrderBookReplay(history, market_id=m.id, platform=m.platform)))
-
-        first_book_seen: set[str] = set()
-        for market, event, book in merge_replays(replays):
-            if self._auto_fees:
-                self._fill_sim._fee_model = PolymarketFeeModel.for_category(market.category)
-            self._event_books[market.id] = book
-            seen = market.id in first_book_seen
-            if self._process_event(event, book, market, seen):
-                first_book_seen.add(market.id)
-            elif not seen and isinstance(event, (SnapshotEvent, DeltaEvent)):
-                first_book_seen.add(market.id)
-
-        for m in event_markets:
-            self._finalize_market(m)
-
-        self._strategy.on_event_end(self._ctx, evt)
-        self._current_event = None
-        self._event_books = {}
+        streams: list[Iterator[tuple[Market, HistoryEvent, OrderBook]]] = []
+        for evt in events:
+            event_markets = client.events.markets(evt.id).to_list()
+            for m in event_markets:
+                # Skip markets with no time overlap with [after, before]
+                if after_ms is not None and m.close_time and m.close_time < after_ms:
+                    continue
+                if before_ms is not None and m.open_time and m.open_time > before_ms:
+                    continue
+                self._market_series[m.id] = series.id
+                streams.append(self._make_market_stream(
+                    client, [m], after=after, before=before,
+                ))
+        return streams
 
 
 class AsyncBacktestEngine(_EngineCore):
     async def run(
         self,
         client: Any,
-        id: str,
+        id: str | list[str],
         *,
         after: Any = None,
         before: Any = None,
         **params: Any,
     ) -> BacktestResult:
+        if isinstance(id, list):
+            streams = await self._resolve_list(client, id, after=after, before=before, **params)
+            await self._run_merged(streams)
+            return self._build_result()
+
         # 1. Try as a market UUID
         try:
             market = await client.markets.get(id)
-            await self._run_single_market(client, market, after=after, before=before)
+            self._market_series[market.id] = market.series_id or market.id
+            await self._run_merged([self._async_make_market_stream(client, [market], after=after, before=before)])
             return self._build_result()
         except NotFoundError:
             pass
@@ -476,23 +558,18 @@ class AsyncBacktestEngine(_EngineCore):
 
         if series is not None:
             if series.structured_type:
-                event_params = dict(params)
-                if after is not None:
-                    event_params["end_after"] = after
-                if before is not None:
-                    event_params["start_before"] = before
-                events = await (await client.series.events(id, **event_params)).to_list()
-                for evt in events:
-                    event_markets = await client.events.markets(evt.id).to_list()
-                    await self._run_event_markets(
-                        client, evt, event_markets, after=after, before=before,
-                    )
+                streams = await self._async_resolve_structured(
+                    client, id, series, after=after, before=before, **params,
+                )
+                await self._run_merged(streams)
             elif series.is_rolling:
                 markets = []
                 async for m in client.series.walk(id, after=after, before=before, **params):
                     markets.append(m)
-                for market in markets:
-                    await self._run_single_market(client, market)
+                for m in markets:
+                    self._market_series[m.id] = series.id
+                    self._market_group[m.id] = series.id
+                await self._run_merged([self._async_make_market_stream(client, markets, after=after, before=before)])
             else:
                 raise ValueError(
                     f"Series '{series.title}' is neither rolling nor structured."
@@ -502,78 +579,136 @@ class AsyncBacktestEngine(_EngineCore):
         # 3. Fallback: condition ID
         found = await client.markets.list(condition_id=id).to_list()
         if found:
-            await self._run_single_market(client, found[0], after=after, before=before)
+            self._market_series[found[0].id] = found[0].series_id or found[0].id
+            await self._run_merged([self._async_make_market_stream(client, [found[0]], after=after, before=before)])
             return self._build_result()
 
         raise NotFoundError(404, "NOT_FOUND", f"No market or series found for '{id}'")
 
-    async def _run_single_market(
-        self, client: Any, market: Market, *, after: Any = None, before: Any = None,
-    ) -> None:
-        self._current_market = market
-        if self._auto_fees:
-            self._fill_sim._fee_model = PolymarketFeeModel.for_category(market.category)
+    async def _resolve_list(
+        self,
+        client: Any,
+        ids: list[str],
+        *,
+        after: Any = None,
+        before: Any = None,
+        **params: Any,
+    ) -> list[AsyncIterator[tuple[Market, HistoryEvent, OrderBook]]]:
+        streams: list[AsyncIterator[tuple[Market, HistoryEvent, OrderBook]]] = []
+        for item_id in ids:
+            # Try market UUID
+            try:
+                market = await client.markets.get(item_id)
+                self._market_series[market.id] = market.series_id or market.id
+                streams.append(self._async_make_market_stream(client, [market], after=after, before=before))
+                continue
+            except NotFoundError:
+                pass
+
+            # Try series
+            series = await client.series.get(item_id)
+            if series.structured_type:
+                streams.extend(await self._async_resolve_structured(
+                    client, item_id, series, after=after, before=before, **params,
+                ))
+            elif series.is_rolling:
+                markets = []
+                async for m in client.series.walk(item_id, after=after, before=before, **params):
+                    markets.append(m)
+                for m in markets:
+                    self._market_series[m.id] = series.id
+                    self._market_group[m.id] = series.id
+                streams.append(self._async_make_market_stream(client, markets, after=after, before=before))
+            else:
+                raise ValueError(
+                    f"Series '{series.title}' is neither rolling nor structured."
+                )
+
+        return streams
+
+    async def _async_make_market_stream(
+        self,
+        client: Any,
+        markets: list[Market],
+        *,
+        after: Any = None,
+        before: Any = None,
+    ) -> AsyncIterator[tuple[Market, HistoryEvent, OrderBook]]:
+        """Async version of ``_make_market_stream``."""
         history_params: dict[str, Any] = {}
         if self._config.include_trades:
             history_params["include_trades"] = True
 
-        history = client.orderbook.history(
-            market.id,
-            after=after or market.open_time,
-            before=before or market.close_time,
-            **history_params,
-        )
-        replay = AsyncOrderBookReplay(
-            history, market_id=market.id, platform=market.platform,
-        )
-
-        first_book_seen = False
-        async for event, book in replay:
-            if self._process_event(event, book, market, first_book_seen):
-                first_book_seen = True
-            elif not first_book_seen and isinstance(event, (SnapshotEvent, DeltaEvent)):
-                first_book_seen = True
-
-        self._finalize_market(market)
-
-    async def _run_event_markets(
-        self, client: Any, evt: Any, event_markets: list[Market],
-        *, after: Any = None, before: Any = None,
-    ) -> None:
-        self._current_event = evt
-        self._event_books = {}
-        self._strategy.on_event_start(self._ctx, evt, event_markets)
-
-        history_params: dict[str, Any] = {}
-        if self._config.include_trades:
-            history_params["include_trades"] = True
-
-        replays: list[tuple[Market, AsyncOrderBookReplay]] = []
-        for m in event_markets:
+        for market in markets:
             history = client.orderbook.history(
-                m.id,
-                after=after or m.open_time,
-                before=before or m.close_time,
+                market.id,
+                after=after or market.open_time,
+                before=before or market.close_time,
                 **history_params,
             )
-            replays.append((
-                m, AsyncOrderBookReplay(history, market_id=m.id, platform=m.platform),
-            ))
+            replay = AsyncOrderBookReplay(history, market_id=market.id, platform=market.platform)
+            async for event, book in replay:
+                yield market, event, book
 
+    async def _run_merged(  # type: ignore[override]
+        self,
+        streams: list[AsyncIterator[tuple[Market, HistoryEvent, OrderBook]]],
+    ) -> None:
         first_book_seen: set[str] = set()
-        async for market, event, book in async_merge_replays(replays):
+        active: dict[str, Market] = {}
+
+        async for market, event, book in async_merge_streams(streams):
+            key = self._market_group.get(market.id, market.id)
+            prev = active.get(key)
+            if prev is not None and prev.id != market.id:
+                self._finalize_market(prev)
+            active[key] = market
+
             if self._auto_fees:
                 self._fill_sim._fee_model = PolymarketFeeModel.for_category(market.category)
-            self._event_books[market.id] = book
+
             seen = market.id in first_book_seen
             if self._process_event(event, book, market, seen):
                 first_book_seen.add(market.id)
             elif not seen and isinstance(event, (SnapshotEvent, DeltaEvent)):
                 first_book_seen.add(market.id)
 
-        for m in event_markets:
+        for m in active.values():
             self._finalize_market(m)
 
-        self._strategy.on_event_end(self._ctx, evt)
-        self._current_event = None
-        self._event_books = {}
+    async def _async_resolve_structured(
+        self,
+        client: Any,
+        series_id: str,
+        series: Any,
+        *,
+        after: Any = None,
+        before: Any = None,
+        **params: Any,
+    ) -> list[AsyncIterator[tuple[Market, HistoryEvent, OrderBook]]]:
+        """Resolve a structured series into per-market async streams."""
+        from marketlens._base import _coerce_timestamp
+
+        event_params = dict(params)
+        if after is not None:
+            event_params["end_after"] = after
+        if before is not None:
+            event_params["start_before"] = before
+        events = await (await client.series.events(series_id, **event_params)).to_list()
+
+        after_ms = _coerce_timestamp(after) if after is not None else None
+        before_ms = _coerce_timestamp(before) if before is not None else None
+
+        streams: list[AsyncIterator[tuple[Market, HistoryEvent, OrderBook]]] = []
+        for evt in events:
+            event_markets = await client.events.markets(evt.id).to_list()
+            for m in event_markets:
+                if after_ms is not None and m.close_time and m.close_time < after_ms:
+                    continue
+                if before_ms is not None and m.open_time and m.open_time > before_ms:
+                    continue
+                self._market_series[m.id] = series.id
+                streams.append(self._async_make_market_stream(
+                    client, [m], after=after, before=before,
+                ))
+        return streams

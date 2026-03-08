@@ -11,6 +11,72 @@ from marketlens.types.market import Market
 from marketlens.types.orderbook import OrderBook
 
 
+def merge_streams(
+    streams: list[Iterator[tuple[Market, HistoryEvent, OrderBook]]],
+) -> Iterator[tuple[Market, HistoryEvent, OrderBook]]:
+    """Heap-merge N event streams by timestamp.
+
+    Each stream yields ``(market, event, book)`` tuples (e.g. from
+    ``_make_market_stream``).  A monotonic sequence counter breaks ties.
+    """
+    heap: list[tuple[int, int, int, Market, HistoryEvent, OrderBook]] = []
+    iters: list[Iterator[tuple[Market, HistoryEvent, OrderBook]]] = []
+    seq = 0
+
+    for idx, stream in enumerate(streams):
+        it = iter(stream)
+        iters.append(it)
+        try:
+            market, event, book = next(it)
+            heap.append((event.t, idx, seq, market, event, book))
+            seq += 1
+        except StopIteration:
+            pass
+
+    heapq.heapify(heap)
+
+    while heap:
+        _, idx, _, market, event, book = heapq.heappop(heap)
+        yield market, event, book
+        try:
+            m, e, b = next(iters[idx])
+            seq += 1
+            heapq.heappush(heap, (e.t, idx, seq, m, e, b))
+        except StopIteration:
+            pass
+
+
+async def async_merge_streams(
+    streams: list[AsyncIterator[tuple[Market, HistoryEvent, OrderBook]]],
+) -> AsyncIterator[tuple[Market, HistoryEvent, OrderBook]]:
+    """Async version of :func:`merge_streams`."""
+    heap: list[tuple[int, int, int, Market, HistoryEvent, OrderBook]] = []
+    iters: list[AsyncIterator[tuple[Market, HistoryEvent, OrderBook]]] = []
+    seq = 0
+
+    for idx, stream in enumerate(streams):
+        ait = stream.__aiter__()
+        iters.append(ait)
+        try:
+            market, event, book = await anext(ait)
+            heap.append((event.t, idx, seq, market, event, book))
+            seq += 1
+        except StopAsyncIteration:
+            pass
+
+    heapq.heapify(heap)
+
+    while heap:
+        _, idx, _, market, event, book = heapq.heappop(heap)
+        yield market, event, book
+        try:
+            m, e, b = await anext(iters[idx])
+            seq += 1
+            heapq.heappush(heap, (e.t, idx, seq, m, e, b))
+        except StopAsyncIteration:
+            pass
+
+
 def merge_replays(
     replays: list[tuple[Market, OrderBookReplay]],
 ) -> Iterator[tuple[Market, HistoryEvent, OrderBook]]:

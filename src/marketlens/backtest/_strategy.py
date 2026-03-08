@@ -9,7 +9,6 @@ from marketlens.backtest._types import (
     OrderSide,
     Position,
 )
-from marketlens.types.event import Event
 from marketlens.types.history import TradeEvent
 from marketlens.types.market import Market
 from marketlens.types.orderbook import OrderBook
@@ -37,13 +36,6 @@ class Strategy(ABC):
     def on_market_end(self, ctx: StrategyContext, market: Market) -> None:
         """Called when a market's data is exhausted, before settlement."""
 
-    def on_event_start(
-        self, ctx: StrategyContext, event: Event, markets: list[Market],
-    ) -> None:
-        """Called when a new event begins in a non-rolling series walk."""
-
-    def on_event_end(self, ctx: StrategyContext, event: Event) -> None:
-        """Called when all markets in an event are exhausted."""
 
 
 class StrategyContext:
@@ -55,31 +47,55 @@ class StrategyContext:
     # ── Order submission ──────────────────────────────────────────
 
     def buy_yes(
-        self, size: str, *, limit_price: str | None = None, cancel_after: int | None = None,
+        self,
+        size: str,
+        *,
+        market_id: str | None = None,
+        limit_price: str | None = None,
+        cancel_after: int | None = None,
     ) -> Order:
         return self._engine.submit_order(
-            OrderSide.BUY_YES, size, limit_price=limit_price, cancel_after=cancel_after,
+            OrderSide.BUY_YES, size,
+            market_id=market_id, limit_price=limit_price, cancel_after=cancel_after,
         )
 
     def buy_no(
-        self, size: str, *, limit_price: str | None = None, cancel_after: int | None = None,
+        self,
+        size: str,
+        *,
+        market_id: str | None = None,
+        limit_price: str | None = None,
+        cancel_after: int | None = None,
     ) -> Order:
         return self._engine.submit_order(
-            OrderSide.BUY_NO, size, limit_price=limit_price, cancel_after=cancel_after,
+            OrderSide.BUY_NO, size,
+            market_id=market_id, limit_price=limit_price, cancel_after=cancel_after,
         )
 
     def sell_yes(
-        self, size: str, *, limit_price: str | None = None, cancel_after: int | None = None,
+        self,
+        size: str,
+        *,
+        market_id: str | None = None,
+        limit_price: str | None = None,
+        cancel_after: int | None = None,
     ) -> Order:
         return self._engine.submit_order(
-            OrderSide.SELL_YES, size, limit_price=limit_price, cancel_after=cancel_after,
+            OrderSide.SELL_YES, size,
+            market_id=market_id, limit_price=limit_price, cancel_after=cancel_after,
         )
 
     def sell_no(
-        self, size: str, *, limit_price: str | None = None, cancel_after: int | None = None,
+        self,
+        size: str,
+        *,
+        market_id: str | None = None,
+        limit_price: str | None = None,
+        cancel_after: int | None = None,
     ) -> Order:
         return self._engine.submit_order(
-            OrderSide.SELL_NO, size, limit_price=limit_price, cancel_after=cancel_after,
+            OrderSide.SELL_NO, size,
+            market_id=market_id, limit_price=limit_price, cancel_after=cancel_after,
         )
 
     # ── Order management ──────────────────────────────────────────
@@ -109,21 +125,35 @@ class StrategyContext:
         return self._engine.open_orders
 
     @property
-    def current_market(self) -> Market:
+    def market(self) -> Market:
         return self._engine.current_market
 
     @property
-    def current_book(self) -> OrderBook:
+    def book(self) -> OrderBook:
         return self._engine.current_book
 
     @property
-    def current_time(self) -> int:
+    def time(self) -> int:
         return self._engine.current_time
 
     @property
-    def event(self) -> Event | None:
-        return self._engine._current_event
+    def books(self) -> dict[str, OrderBook]:
+        return dict(self._engine._books)
+
+    # ── Backwards-compatible aliases ──────────────────────────────
+
+    @property
+    def current_market(self) -> Market:
+        return self.market
+
+    @property
+    def current_book(self) -> OrderBook:
+        return self.book
+
+    @property
+    def current_time(self) -> int:
+        return self.time
 
     @property
     def event_books(self) -> dict[str, OrderBook]:
-        return dict(self._engine._event_books)
+        return self.books

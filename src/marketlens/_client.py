@@ -42,7 +42,7 @@ class MarketLens:
     def backtest(
         self,
         strategy: Any,
-        id: str,
+        id: str | list[str],
         *,
         after: Any = None,
         before: Any = None,
@@ -54,7 +54,7 @@ class MarketLens:
         limit_fill_rate: float = 0.1,
         **params: Any,
     ) -> Any:
-        """Run a backtest on a market or rolling series.
+        """Run a backtest on a market, series, or list of markets/series.
 
         Simple one-liner API. For advanced config, use ``BacktestEngine`` directly.
         """
@@ -111,7 +111,7 @@ class AsyncMarketLens:
     async def backtest(
         self,
         strategy: Any,
-        id: str,
+        id: str | list[str],
         *,
         after: Any = None,
         before: Any = None,
@@ -123,7 +123,7 @@ class AsyncMarketLens:
         limit_fill_rate: float = 0.1,
         **params: Any,
     ) -> Any:
-        """Run a backtest on a market or rolling series (async)."""
+        """Run a backtest on a market, series, or list of markets/series (async)."""
         from marketlens.backtest import AsyncBacktestEngine, BacktestConfig
 
         config = BacktestConfig(

@@ -54,10 +54,10 @@ class SeriesResource:
 
         Args:
             series_id: Series identifier.
-            after: Only include markets closing at or after this time
-                (epoch ms or ``datetime``).
-            before: Only include markets closing at or before this time
-                (epoch ms or ``datetime``).
+            after: Only include markets active at or after this time — filters
+                ``close_time >= after`` (epoch ms or ``datetime``).
+            before: Only include markets active at or before this time — filters
+                ``open_time <= before`` (epoch ms or ``datetime``).
             **params: Extra filter params (e.g. ``status``, ``platform``).
         """
         resolved = self._resolve(series_id)
@@ -73,7 +73,7 @@ class SeriesResource:
             if after is not None:
                 params["close_after"] = after
             if before is not None:
-                params["close_before"] = before
+                params["open_before"] = before
             yield from SyncPageIterator(self._client, "/markets", params, Market)
         else:
             yield from SyncPageIterator(
@@ -147,7 +147,7 @@ class AsyncSeriesResource:
             if after is not None:
                 params["close_after"] = after
             if before is not None:
-                params["close_before"] = before
+                params["open_before"] = before
             async for market in AsyncPageIterator(self._client, "/markets", params, Market):
                 yield market
         else:
