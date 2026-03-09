@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "marketlens"
-version = "0.4.0"
+version = "0.5.0"
 description = "Historical tick-by-tick L2 orderbook reconstruction and backtesting primitives for Polymarket. Spread, impact, imbalance, and every trade, delivered as a DataFrame."
 readme = "README.md"
 license = "MIT"
