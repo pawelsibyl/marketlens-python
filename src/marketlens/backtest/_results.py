@@ -49,8 +49,8 @@ class BacktestResult:
         losses = [n for _, n in net_pnls if n < 0]
         self.win_rate = len(wins) / len(net_pnls) if net_pnls else 0.0
 
-        gross_profit = sum(wins)
-        gross_loss = abs(sum(losses))
+        gross_profit = sum(wins, _ZERO)
+        gross_loss = abs(sum(losses, _ZERO))
         if gross_loss > 0:
             self.profit_factor = float(gross_profit / gross_loss)
         elif gross_profit > 0:
@@ -58,35 +58,65 @@ class BacktestResult:
         else:
             self.profit_factor = 0.0
 
-        # Sharpe ratio
-        self.sharpe_ratio: float | None = None
+        # Per-settlement returns (shared by Sharpe & Sortino)
+        returns: list[float] = []
         if len(settlements) >= 2:
-            returns: list[float] = []
             for s in settlements:
                 cb = Decimal(s.avg_entry_price) * Decimal(s.shares)
                 if cb > 0:
                     returns.append(float((Decimal(s.pnl) - Decimal(s.fees)) / cb))
-            if len(returns) >= 2:
-                mean_r = sum(returns) / len(returns)
-                var_r = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
-                std_r = var_r**0.5
-                if std_r > 0:
-                    self.sharpe_ratio = mean_r / std_r
 
-        # Max drawdown
+        # Sharpe ratio
+        self.sharpe_ratio: float | None = None
+        if len(returns) >= 2:
+            mean_r = sum(returns) / len(returns)
+            var_r = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
+            std_r = var_r**0.5
+            if std_r > 0:
+                self.sharpe_ratio = mean_r / std_r
+
+        # Sortino ratio
+        self.sortino_ratio: float | None = None
+        if len(returns) >= 2:
+            neg_returns = [r for r in returns if r < 0]
+            if neg_returns:
+                mean_r = sum(returns) / len(returns)
+                downside_var = sum(r**2 for r in neg_returns) / len(returns)
+                downside_dev = downside_var**0.5
+                if downside_dev > 0:
+                    self.sortino_ratio = mean_r / downside_dev
+
+        # Max drawdown & max drawdown duration
         if equity_curve:
             peak = Decimal(equity_curve[0]["equity"])
             max_dd = _ZERO
+            dd_start: int | None = None
+            max_dur = 0
             for point in equity_curve:
                 eq = Decimal(point["equity"])
-                if eq > peak:
+                if eq >= peak:
+                    if dd_start is not None:
+                        dur = point["t"] - dd_start
+                        if dur > max_dur:
+                            max_dur = dur
+                        dd_start = None
                     peak = eq
-                dd = peak - eq
-                if dd > max_dd:
-                    max_dd = dd
+                else:
+                    if dd_start is None:
+                        dd_start = point["t"]
+                    dd = peak - eq
+                    if dd > max_dd:
+                        max_dd = dd
+            # Handle still in drawdown at end
+            if dd_start is not None:
+                dur = equity_curve[-1]["t"] - dd_start
+                if dur > max_dur:
+                    max_dur = dur
             self.max_drawdown = float(max_dd / initial) if initial else 0.0
+            self.max_drawdown_duration: int = max_dur
         else:
             self.max_drawdown = 0.0
+            self.max_drawdown_duration = 0
 
         # Avg entry price
         buy_fills = [f for f in self._fills if f.side.value.startswith("BUY")]
@@ -96,6 +126,47 @@ class BacktestResult:
             self.avg_entry_price = str((total_cost / total_size).quantize(_FOUR))
         else:
             self.avg_entry_price = "0.0000"
+
+        # Expectancy (avg net PnL per settlement)
+        if net_pnls:
+            total_net = sum(n for _, n in net_pnls)
+            self.expectancy = str((total_net / len(net_pnls)).quantize(_FOUR))
+        else:
+            self.expectancy = "0.0000"
+
+        # Average win / average loss / payoff ratio
+        self.avg_win = str((sum(wins) / len(wins)).quantize(_FOUR)) if wins else "0.0000"
+        self.avg_loss = str((sum(losses) / len(losses)).quantize(_FOUR)) if losses else "0.0000"
+        if losses:
+            self.payoff_ratio = (
+                float(abs(sum(wins) / len(wins)) / abs(sum(losses) / len(losses)))
+                if wins
+                else 0.0
+            )
+        else:
+            self.payoff_ratio = float("inf") if wins else 0.0
+
+        # Avg holding period (ms)
+        if settlements:
+            fill_first: dict[str, int] = {}
+            for f in self._fills:
+                if f.market_id not in fill_first or f.timestamp < fill_first[f.market_id]:
+                    fill_first[f.market_id] = f.timestamp
+            durations: list[int] = []
+            for s in settlements:
+                entry_t = fill_first.get(s.market_id)
+                if entry_t is not None:
+                    durations.append(s.resolved_at - entry_t)
+            self.avg_holding_ms = sum(durations) // len(durations) if durations else 0
+        else:
+            self.avg_holding_ms = 0
+
+        # Capital utilization
+        if equity_curve and initial > 0:
+            avg_cash = sum(Decimal(p["cash"]) for p in equity_curve) / len(equity_curve)
+            self.capital_utilization = max(0.0, float(1 - avg_cash / initial))
+        else:
+            self.capital_utilization = 0.0
 
     def summary(self) -> dict[str, Any]:
         s: dict[str, Any] = {
@@ -107,6 +178,16 @@ class BacktestResult:
             "sharpe_ratio": (
                 f"{self.sharpe_ratio:.2f}" if self.sharpe_ratio is not None else "N/A"
             ),
+            "sortino_ratio": (
+                f"{self.sortino_ratio:.2f}" if self.sortino_ratio is not None else "N/A"
+            ),
+            "expectancy": self.expectancy,
+            "avg_win": self.avg_win,
+            "avg_loss": self.avg_loss,
+            "payoff_ratio": f"{self.payoff_ratio:.2f}",
+            "avg_holding_ms": self.avg_holding_ms,
+            "capital_utilization": f"{self.capital_utilization:.1%}",
+            "max_drawdown_duration_ms": self.max_drawdown_duration,
             "total_trades": self.total_trades,
             "markets_traded": self.markets_traded,
             "total_fees": self.total_fees,
@@ -247,11 +328,38 @@ class BacktestResult:
                 f for f in self._fills if f.market_id in market_ids
             ])
 
+            expectancy = (
+                str((total_pnl / len(net_pnls)).quantize(_FOUR)) if net_pnls else "0.0000"
+            )
+            avg_win = (
+                str((sum(wins, _ZERO) / len(wins)).quantize(_FOUR)) if wins else "0.0000"
+            )
+            avg_loss = (
+                str((sum(losses, _ZERO) / len(losses)).quantize(_FOUR))
+                if losses
+                else "0.0000"
+            )
+            if losses:
+                payoff_ratio = (
+                    float(
+                        abs(sum(wins, _ZERO) / len(wins))
+                        / abs(sum(losses, _ZERO) / len(losses))
+                    )
+                    if wins
+                    else 0.0
+                )
+            else:
+                payoff_ratio = float("inf") if wins else 0.0
+
             result[sid] = {
                 "total_pnl": str(total_pnl.quantize(_FOUR)),
                 "total_fees": str(total_fees.quantize(_FOUR)),
                 "win_rate": win_rate,
                 "profit_factor": profit_factor,
+                "expectancy": expectancy,
+                "avg_win": avg_win,
+                "avg_loss": avg_loss,
+                "payoff_ratio": payoff_ratio,
                 "markets_traded": len(market_ids),
                 "total_trades": total_trades,
             }
