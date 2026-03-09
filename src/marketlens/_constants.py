@@ -1,4 +1,4 @@
-VERSION = "0.5.0"
-DEFAULT_BASE_URL = "https://api.marketlens.com/v1"
+VERSION = "1.0.0"
+DEFAULT_BASE_URL = "https://api.marketlens.trade/v1"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 2
