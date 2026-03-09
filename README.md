@@ -1,180 +1,184 @@
-# MarketLens Python SDK
+# marketlens
 
-Historical and real-time prediction market data — full L2 orderbook reconstruction, microstructure analytics, and backtesting primitives for Polymarket.
+Backtest prediction market strategies on tick-level L2 order book data from Polymarket.
 
 ```bash
 pip install marketlens
 ```
 
+## Backtest
+
+Define a strategy, run it against any market or series — the engine replays full L2 book state tick-by-tick with realistic execution.
+
 ```python
 from marketlens import MarketLens
-
-client = MarketLens(api_key="mk_...")  # or set MARKETLENS_API_KEY env var
-```
-
-## Order Book Replay
-
-Replay full L2 book state for any market. Each tick yields `(Market, OrderBook)` — one line to go from market ID to book-level analysis.
-
-```python
-for market, book in client.orderbook.walk(market_id, after=start, before=end):
-    print(f"mid={book.midpoint}  spread={book.spread_bps():.0f}bps")
-
-# Or as a DataFrame
-df = client.orderbook.walk(market_id, after=start, before=end).to_dataframe()
-```
-
-## Rolling Series
-
-Walk every market in a rolling series chronologically — same `orderbook.walk()` interface, just pass a series slug instead of a market ID.
-
-```python
-for market, book in client.orderbook.walk("btc-up-or-down-5m", status="resolved"):
-    if (spread := book.spread_bps()) and spread < 200:
-        entry = book.impact("BUY", "100")
-```
-
-## Structured Products
-
-Walk a structured product series (multi-strikes, neg-risk, barrier). All sibling strike markets are replayed in parallel — `walk.books` always holds the latest book for every strike, and `walk.surface()` fits the implied probability distribution at every tick.
-
-```python
-walk = client.orderbook.walk("btc-multi-strikes-weekly")
-for market, book in walk:
-    surface = walk.surface()
-    if not surface:
-        continue
-    strikes = surface.survival_strikes()
-    curve = "  ".join(f"${s.strike:,.0f}={s.fitted_prob:.3f}" for s in strikes)
-    print(f"[{walk.event.title}] mean=${float(surface.implied_mean):,.0f}  {curve}")
-```
-
-Walk properties available during iteration:
-
-| Property | Description |
-|----------|-------------|
-| `walk.books` | `{market_id: OrderBook}` — latest book for every sibling strike |
-| `walk.markets` | `{market_id: Market}` — all strike markets in the current event |
-| `walk.event` | Current `Event` (transitions automatically between events) |
-| `walk.series` | Resolved `Series` |
-| `walk.surface()` | `Surface` fitted from current book midpoints (same format as API) |
-
-## Backtesting
-
-Define a strategy by subclassing `Strategy` and implementing event hooks. Run it against any market, rolling series, structured product, or multiple series at once — the engine replays L2 book data tick-by-tick with realistic execution simulation.
-
-```python
 from marketlens.backtest import Strategy
 
-class BuyOnTightSpread(Strategy):
+class SpreadTimer(Strategy):
+    def on_market_start(self, ctx, market, book):
+        self._entered = False
+
     def on_book(self, ctx, market, book):
-        if ctx.position().side == "FLAT" and book.spread_bps() and book.spread_bps() < 200:
-            ctx.buy_yes(size="100")
+        if self._entered:
+            return
+        if book.spread_bps() and book.spread_bps() < 300:
+            ctx.buy_yes(size="200")
+            self._entered = True
 
-# Single series
-result = client.backtest(BuyOnTightSpread(), "btc-up-or-down-5m",
-                         initial_cash="10000.0000",
-                         after="2026-03-05T10:00Z", before="2026-03-05T10:05Z")
-
-# Multi-series portfolio — shared capital across assets
-result = client.backtest(BuyOnTightSpread(),
-                         ["btc-up-or-down-5m", "eth-up-or-down-5m", "sol-up-or-down-5m"],
-                         initial_cash="10000.0000",
-                         after="2026-03-05T10:00Z", before="2026-03-05T10:30Z")
-result.trades_df()       # per-fill DataFrame
-result.settlements_df()  # per-market settlement P&L
-result.by_series()       # per-series PnL attribution
-result.equity_df()       # equity curve over time
+client = MarketLens()  # uses MARKETLENS_API_KEY env var
+result = client.backtest(
+    SpreadTimer(), "sol-up-or-down-hourly",
+    initial_cash="10000",
+    after="2026-03-05T10:00Z", before="2026-03-05T14:00Z",
+)
+print(result)
 ```
+
+Pass a market ID, series slug, or a list of series for multi-asset portfolios:
+
+```python
+# Single market
+result = client.backtest(strategy, market_id, initial_cash="10000")
+
+# Rolling series — walks every market in the series chronologically
+result = client.backtest(strategy, "btc-up-or-down-5m", initial_cash="10000",
+                         after="2026-03-05", before="2026-03-06")
+
+# Multi-asset portfolio — shared capital across series
+result = client.backtest(strategy,
+    ["btc-up-or-down-5m", "eth-up-or-down-5m", "sol-up-or-down-5m"],
+    initial_cash="10000", after="2026-03-05", before="2026-03-06")
+
+# Structured product — parallel replay of all strike markets in the series
+result = client.backtest(strategy, "btc-multi-strikes-weekly", initial_cash="10000")
+```
+
+### Execution realism
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `latency_ms` | `50` | Order-to-fill delay in milliseconds |
+| `queue_position` | `False` | CLOB queue modeling — fills only when queue-ahead is drained by trades |
+| `limit_fill_rate` | `0.1` | Fraction of trade size filling your limit (ignored when `queue_position=True`) |
+| `slippage_bps` | `0` | Extra price penalty on market order fills |
+| `fees` | `"polymarket"` | Auto-detects crypto vs sports fee schedule; `None` for zero fees |
+| `max_fill_fraction` | `1.0` | Max fraction of each book level consumed per order |
+| `include_trades` | `True` | Fetch trade data (required for limit fills and `on_trade`) |
 
 ### Strategy hooks
 
 | Hook | Called when |
 |------|------------|
 | `on_book(ctx, market, book)` | Every book state change (snapshot or delta) |
-| `on_trade(ctx, market, book, trade)` | Every historical trade |
+| `on_trade(ctx, market, book, trade)` | Every executed trade |
 | `on_fill(ctx, market, fill)` | Your order is filled |
-| `on_market_start(ctx, market, book)` | A new market begins in the walk |
-| `on_market_end(ctx, market)` | A market's data is exhausted, before settlement |
+| `on_market_start(ctx, market, book)` | A new market begins |
+| `on_market_end(ctx, market)` | A market ends, before settlement |
 
-For structured products and multi-market backtests, `ctx.books` gives the latest book for every active market — the same cross-market view as `walk.books`.
+`ctx` provides: `buy_yes()`, `sell_yes()`, `buy_no()`, `sell_no()`, `cancel_order()`, `cancel_all_orders()`, `position()`, `open_orders`, `books` (all active order books), and `reference_price()` (Binance spot for crypto underlyings).
 
-For markets with a crypto underlying, `ctx.reference_price()` returns the Binance spot price at the current tick — useful for computing moneyness, basis, or filtering by distance-to-strike.
-
-### Execution realism
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `initial_cash` | *required* | Starting capital (e.g. `"10000.0000"`) — buy orders exceeding cash are cancelled |
-| `latency_ms` | `50` | Order-to-fill delay — orders fill against the book state N ms after submission |
-| `queue_position` | `False` | CLOB-realistic queue modeling — tracks each order's position in the book and fills only when queue-ahead is fully drained by trades and cancellations |
-| `limit_fill_rate` | `0.1` | Flat fraction of trade size that fills your limit order. Ignored when `queue_position=True` |
-| `slippage_bps` | `0` | Extra price penalty on market order fills (on top of L2 book walk) |
-| `fees` | `"polymarket"` | Fee model — auto-detects per category (crypto vs sports). Set to `None` for zero fees |
-| `max_fill_fraction` | `1.0` | Max fraction of each book level consumed per order |
-| `include_trades` | `True` | Fetch trade data (required for limit order fills and `on_trade`) |
-
-For full control, use `BacktestEngine` with `BacktestConfig` directly.
-
-## Implied Probability Surfaces
-
-Implied distributions extracted from multi-strike prediction markets — survival curves, density functions, and barrier probabilities, fitted via isotonic regression. Updated every 5 minutes via the API, or recomputed at every tick via `walk.surface()`.
+### Results
 
 ```python
-for surface in client.signals.surfaces(underlying="BTC"):
-    if surface.surface_type == "survival":
+result.total_pnl            # net P&L
+result.total_return         # as decimal (0.12 = 12%)
+result.win_rate             # fraction of profitable settlements
+result.sharpe_ratio         # per-settlement Sharpe
+result.sortino_ratio        # downside-adjusted
+result.max_drawdown         # peak-to-trough as fraction
+result.profit_factor        # gross wins / gross losses
+result.expectancy           # avg net P&L per settlement
+
+result.trades_df()          # per-fill DataFrame
+result.orders_df()          # per-order DataFrame
+result.settlements_df()     # per-market settlement P&L
+result.equity_df()          # equity curve time series
+result.by_series()          # per-series P&L attribution
+```
+
+## Data
+
+All list methods return auto-paginating iterators with `.to_list()` and `.to_dataframe()`.
+
+### Order book replay
+
+`walk()` replays full L2 book state for any market or series. Pass a market ID, series slug, or condition ID — the same interface for everything.
+
+```python
+for market, book in client.orderbook.walk("btc-up-or-down-5m", status="resolved"):
+    print(market.question, book.midpoint, book.spread_bps())
+
+# As a DataFrame
+df = client.orderbook.walk(market_id, after=start, before=end).to_dataframe()
+```
+
+### Candles, trades, markets
+
+```python
+candles = client.markets.candles(market_id, resolution="1h").to_dataframe()
+trades = client.markets.trades(market_id, after=start, before=end).to_list()
+active = client.markets.list(status="active", sort="-volume", limit=10).first_page()
+```
+
+### Bulk export
+
+Download full-day Parquet files — one file per market per day, no pagination.
+
+```python
+path = client.exports.download(market_id, table="deltas", date="2026-03-07")
+paths = client.exports.download_range(
+    market_id, table="snapshots", after="2026-03-01", before="2026-03-08")
+```
+
+## Structured Products & Surfaces
+
+For multi-strike series (survival, density, barrier), all sibling markets replay in parallel. `walk.books` holds the latest book for every strike, and `walk.surface()` fits the implied probability distribution at each tick.
+
+```python
+walk = client.orderbook.walk("btc-multi-strikes-weekly")
+for market, book in walk:
+    surface = walk.surface()
+    if surface:
         for s in surface.survival_strikes():
-            print(f"  K={s.strike:>10,.0f}  P(above)={s.fitted_prob:.3f}")
-    elif surface.surface_type == "density":
-        for b in surface.density_buckets():
-            print(f"  ${b.lower:,.0f}-${b.upper:,.0f}  p={b.normalized_prob:.3f}")
-    elif surface.surface_type == "barrier":
-        for b in surface.barrier_strikes():
-            print(f"  {b.direction} ${b.strike:,.0f}  P={b.fitted_prob:.3f}")
+            print(f"${s.strike:,.0f} P(above)={s.fitted_prob:.3f}")
+        print(f"implied_mean=${float(surface.implied_mean):,.0f}")
 ```
 
-| Type | Source | Fitting | Stats |
-|------|--------|---------|-------|
-| `survival` | Multi-strike "above $X" markets | PAVA monotone decreasing | `implied_mean`, `implied_cv`, `implied_skew` |
-| `density` | Neg-risk range + tail markets | Normalized probabilities | `implied_mean`, `implied_cv`, `implied_skew` |
-| `barrier` | Hit-price reach/dip markets | PAVA per direction | `implied_peak`, `implied_peak_cv`, `implied_trough`, `implied_trough_cv` |
+| Type | Source | Stats |
+|------|--------|-------|
+| `survival` | "above $X" multi-strike markets | `implied_mean`, `implied_cv`, `implied_skew` |
+| `density` | Neg-risk range + tail markets | `implied_mean`, `implied_cv`, `implied_skew` |
+| `barrier` | Hit-price reach/dip markets | `implied_peak`, `implied_trough` |
 
-## Reference Prices
+Pre-computed surfaces updated every 5 minutes are also available via `client.signals.surfaces()`.
 
-Binance spot prices for crypto underlyings (BTC, ETH, SOL, XRP, BNB, DOGE, LINK, HYPE, ENA) at 1-second resolution. Markets with a recognized underlying expose it via `market.underlying`.
+## OrderBook
 
-```python
-# Direct access
-for candle in client.reference.candles("BTC", after=start, before=end):
-    print(candle.timestamp, candle.close)
-
-# In a backtest — spot price at the current tick
-class MyStrategy(Strategy):
-    def on_book(self, ctx, market, book):
-        spot = ctx.reference_price()  # Binance close for market's underlying
-```
-
-## OrderBook Analytics
-
-Every `OrderBook` — live snapshot or replayed — carries the same analytical methods:
+Every `OrderBook` instance — live or replayed — carries analytical methods:
 
 ```python
-book = client.orderbook.get(market_id)
-
 book.microprice()              # size-weighted mid from best level
 book.weighted_midpoint(n=3)    # n-level weighted mid
 book.spread_bps()              # spread in basis points
-book.imbalance()               # full-book bid/ask imbalance [-1, 1]
-book.imbalance(levels=3)       # top-of-book imbalance
-book.impact("BUY", "1000")     # VWAP execution price for $1k market buy
-book.slippage("BUY", "1000")   # slippage from mid for $1k order
-book.depth_within("0.02")      # (bid_depth, ask_depth) within 2c of mid
+book.imbalance(levels=3)       # bid/ask imbalance [-1, 1]
+book.impact("BUY", "1000")     # VWAP for $1k market buy
+book.slippage("BUY", "1000")   # slippage from mid
+book.depth_within("0.02")      # (bid, ask) depth within 2c of mid
 ```
 
-## Resources
+## Reference Prices
 
-| Namespace | Methods |
-|-----------|---------|
+Binance spot at 1-second resolution for crypto underlyings (BTC, ETH, SOL, XRP, etc.). Available directly or inside backtests via `ctx.reference_price()`.
+
+```python
+for candle in client.reference.candles("BTC", after=start, before=end):
+    print(candle.timestamp, candle.close)
+```
+
+## API Reference
+
+| Resource | Methods |
+|----------|---------|
 | `client.markets` | `list()` `get()` `trades()` `candles()` |
 | `client.events` | `list()` `get()` `markets()` |
 | `client.series` | `list()` `get()` `markets()` `walk()` `events()` |
@@ -183,61 +187,20 @@ book.depth_within("0.02")      # (bid_depth, ask_depth) within 2c of mid
 | `client.reference` | `candles()` |
 | `client.exports` | `download()` `download_range()` |
 
-All list methods return auto-paginating iterators with `.to_list()` and `.to_dataframe()`.
-
-```python
-df = client.markets.candles(market_id, resolution="1h").to_dataframe()
-trades = client.markets.trades(market_id, after=start, before=end).to_list()
-top = client.markets.list(status="active", sort="-liquidity", limit=5).first_page()
-```
-
-## Bulk Data Export
-
-Download full-day Parquet exports of order book snapshots and deltas — one file per market per day, no pagination required.
-
-```python
-# Single day
-path = client.exports.download(market_id, table="deltas", date="2026-03-07")
-
-# Date range
-paths = client.exports.download_range(
-    market_id, table="snapshots", after="2026-03-01", before="2026-03-08",
-)
-```
-
-Files are saved to the current directory by default. Pass `path="./data"` to choose a destination. Returns `Path` objects pointing to the downloaded `.parquet` files.
-
-| Parameter | Description |
-|-----------|-------------|
-| `table` | `"snapshots"` or `"deltas"` |
-| `date` | `YYYY-MM-DD` (must be before today) |
-| `after` / `before` | Date range — inclusive start, exclusive end |
-| `path` | Output directory (default: `.`) |
-
-## Async
-
-Every resource, iterator, and replay helper has an async counterpart.
-
-```python
-from marketlens import AsyncMarketLens
-
-async with AsyncMarketLens() as client:
-    async for market, book in await client.orderbook.walk(market_id, after=start, before=end):
-        print(book.microprice(), book.imbalance(levels=3))
-```
+Async: use `AsyncMarketLens` — every method has an async counterpart.
 
 ## Examples
 
 | Example | Description |
 |---------|-------------|
-| [`execution_cost.py`](examples/execution_cost.py) | Live book depth, spread, impact and slippage across order sizes |
-| [`microstructure.py`](examples/microstructure.py) | Rolling series feature matrix — does imbalance predict outcome? |
-| [`implied_surfaces.py`](examples/implied_surfaces.py) | Implied probability surfaces — survival, density, and barrier |
-| [`event_strikes.py`](examples/event_strikes.py) | Structured product walk — parallel books with live surface fitting |
-| [`backtest_basic.py`](examples/backtest_basic.py) | Single-series backtest — spread-timing strategy with settlement |
-| [`backtest_limit_orders.py`](examples/backtest_limit_orders.py) | Market-making with limit orders and on_fill exit |
-| [`backtest_surface.py`](examples/backtest_surface.py) | Surface mispricing — PAVA regression with spot-distance filter via reference prices |
-| [`backtest_portfolio.py`](examples/backtest_portfolio.py) | Multi-series portfolio — imbalance strategy across three assets |
+| [`backtest_basic.py`](examples/backtest_basic.py) | Spread-timing strategy on a rolling series |
+| [`backtest_limit_orders.py`](examples/backtest_limit_orders.py) | Market-making with CLOB queue position simulation |
+| [`backtest_surface.py`](examples/backtest_surface.py) | Surface mispricing with spot-distance filtering |
+| [`backtest_portfolio.py`](examples/backtest_portfolio.py) | Multi-series portfolio with shared capital |
+| [`execution_cost.py`](examples/execution_cost.py) | Book depth, spread, impact and slippage |
+| [`microstructure.py`](examples/microstructure.py) | Feature matrix — does imbalance predict outcome? |
+| [`implied_surfaces.py`](examples/implied_surfaces.py) | Survival, density, and barrier surfaces |
+| [`event_strikes.py`](examples/event_strikes.py) | Structured product walk with live surface fitting |
 
 ## License
 
