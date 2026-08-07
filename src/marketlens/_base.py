@@ -208,12 +208,18 @@ class SyncHTTPClient:
         for attempt in range(1 + self.max_retries):
             try:
                 response = self._client.request(method, path, **kwargs)
-            except httpx.TimeoutException as exc:
+            except httpx.ConnectTimeout as exc:
+                # The request never reached the server, so a retry is cheap.
                 last_exc = TimeoutError(str(exc))
                 if attempt < self.max_retries:
                     time.sleep(2**attempt)
                     continue
                 raise last_exc from exc
+            except httpx.TimeoutException as exc:
+                # Read/write/pool timeout: the server is still running the
+                # query, and a retry re-runs it at full cost with the same
+                # deadline, so it cannot succeed where this attempt failed.
+                raise TimeoutError(str(exc)) from exc
             except httpx.ConnectError as exc:
                 last_exc = ConnectionError(str(exc))
                 if attempt < self.max_retries:
@@ -422,12 +428,18 @@ class AsyncHTTPClient:
         for attempt in range(1 + self.max_retries):
             try:
                 response = await self._client.request(method, path, **kwargs)
-            except httpx.TimeoutException as exc:
+            except httpx.ConnectTimeout as exc:
+                # The request never reached the server, so a retry is cheap.
                 last_exc = TimeoutError(str(exc))
                 if attempt < self.max_retries:
                     await asyncio.sleep(2**attempt)
                     continue
                 raise last_exc from exc
+            except httpx.TimeoutException as exc:
+                # Read/write/pool timeout: the server is still running the
+                # query, and a retry re-runs it at full cost with the same
+                # deadline, so it cannot succeed where this attempt failed.
+                raise TimeoutError(str(exc)) from exc
             except httpx.ConnectError as exc:
                 last_exc = ConnectionError(str(exc))
                 if attempt < self.max_retries:
