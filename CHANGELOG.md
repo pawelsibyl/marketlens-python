@@ -2,6 +2,11 @@
 
 All notable changes to the `marketlens` Python SDK, version by version.
 
+## [Unreleased]
+
+* See what a bulk download will cost before spending budget on it: `client.exports.download_series(..., dry_run=True)` returns the usual `SeriesDownloadResult` with `events_charged` as the price of the window and `ready` naming the markets a real call would fetch, but downloads nothing and bills nothing. The quote partitions against your remaining daily budget exactly like the real call, so a window that is too big shows up as `rate_limited` before you commit. Works on both clients.
+* Requests that hit the read timeout now fail immediately with `marketlens.TimeoutError` instead of retrying. The server keeps running such a query after the client gives up, so retrying with the same deadline could never succeed and only tripled the load behind the slowdown. Connect timeouts (the request never reached the server) still retry with backoff, as do 429 and 5xx responses.
+
 ## [1.6.2] 2026-07-23
 
 * Packaging only, no code changes. The README now carries the MCP Registry ownership marker (`mcp-name`), and the repo gains a `server.json`, so the MCP server can be published to the official MCP Registry. The registry verifies the marker against the package description on PyPI, which is why this needs a release.
