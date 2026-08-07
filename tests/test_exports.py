@@ -428,6 +428,35 @@ class TestSeriesDownload:
 
         assert result.rate_limited == []
 
+    def test_dry_run_downloads_nothing_and_creates_nothing(self, mock_api, client, tmp_path):
+        # Dry-run manifests carry no URLs. No bucket route and no series-walk
+        # route are registered, so any fetch or reference walk would make
+        # respx raise; the data_dir must not be created either.
+        manifest = {
+            "ready": [
+                {"market_id": "m1", "events": 100},
+                {"market_id": "m2", "events": 250},
+            ],
+            "pending": [{"market_id": "m3", "status": "pending"}],
+            "failed": [],
+            "rate_limited": [{"market_id": "m9", "events": 500}],
+            "events_charged": 350,
+        }
+        route = mock_api.get("/series/btc-daily/export").mock(
+            return_value=httpx.Response(200, json=manifest)
+        )
+
+        target = tmp_path / "quote-only"
+        result = client.exports.download_series(
+            "btc-daily", data_dir=str(target), progress=False, dry_run=True,
+        )
+
+        assert route.calls.last.request.url.params["dry_run"] == "true"
+        assert result.ready == ["m1", "m2"]
+        assert result.events_charged == 350
+        assert [r.market_id for r in result.rate_limited] == ["m9"]
+        assert not target.exists()
+
     def test_404_unknown_series(self, mock_api, client, tmp_path):
         mock_api.get("/series/unknown/export").mock(
             return_value=httpx.Response(
@@ -528,6 +557,27 @@ class TestAsyncExports:
         assert result.ready == ["m1"]
         assert len(result.pending) == 1
         assert (tmp_path / "history-m1-compact.parquet").read_bytes() == b"PAR1-m1"
+
+    async def test_series_download_dry_run(self, mock_api, aclient, tmp_path):
+        manifest = {
+            "ready": [{"market_id": "m1", "events": 100}],
+            "pending": [],
+            "failed": [],
+            "events_charged": 100,
+        }
+        route = mock_api.get("/series/s1/export").mock(
+            return_value=httpx.Response(200, json=manifest)
+        )
+
+        target = tmp_path / "quote-only"
+        result = await aclient.exports.download_series(
+            "s1", data_dir=str(target), progress=False, dry_run=True,
+        )
+
+        assert route.calls.last.request.url.params["dry_run"] == "true"
+        assert result.ready == ["m1"]
+        assert result.events_charged == 100
+        assert not target.exists()
 
     async def test_series_download_concurrency(self, mock_api, aclient, tmp_path):
         ready = [f"m{i}" for i in range(4)]

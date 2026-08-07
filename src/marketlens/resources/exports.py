@@ -43,6 +43,10 @@ class SeriesDownloadResult:
 
     Implements ``os.PathLike`` so callers can pass the result directly anywhere
     a directory is expected (e.g. ``client.backtest(..., data_dir=result)``).
+
+    For a ``dry_run=True`` call, ``events_charged`` is the cost a real call
+    would bill right now and ``ready`` names the markets it would download;
+    no files were written and nothing was billed.
     """
     data_dir: Path
     ready: list[str] = field(default_factory=list)
@@ -160,6 +164,7 @@ class Exports:
         progress: bool = True,
         coalesce: bool = True,
         concurrency: int = 1,
+        dry_run: bool = False,
     ) -> SeriesDownloadResult:
         """Download all data needed to backtest a series.
 
@@ -177,6 +182,11 @@ class Exports:
             progress: Show a rich progress bar. Auto-disables in non-TTY.
             coalesce: See :meth:`download`. Default True.
             concurrency: Number of concurrent per-market downloads. Default 1.
+            dry_run: When True, fetch the manifest only: nothing is
+                downloaded, nothing is billed, and ``events_charged`` on the
+                result is the cost an identical call without ``dry_run``
+                would bill right now. Use it to check the price of a window
+                before spending budget on it.
 
         Returns:
             ``SeriesDownloadResult`` with ``data_dir``, ``ready``, ``pending``,
@@ -186,10 +196,13 @@ class Exports:
             after the budget resets or with a narrower ``after``/``before``
             window. The result is ``os.PathLike`` (its ``__fspath__`` returns
             the data directory), so it can be passed directly to
-            ``client.backtest(..., data_dir=result)``.
+            ``client.backtest(..., data_dir=result)``. With ``dry_run=True``
+            the ``ready`` list names the markets a real call would download,
+            but no files exist yet.
         """
         data_dir = Path(data_dir)
-        data_dir.mkdir(parents=True, exist_ok=True)
+        if not dry_run:
+            data_dir.mkdir(parents=True, exist_ok=True)
 
         params: dict[str, Any] = {}
         if after is not None:
@@ -198,6 +211,8 @@ class Exports:
             params["before"] = _coerce_timestamp(before)
         if coalesce:
             params["coalesce"] = "true"
+        if dry_run:
+            params["dry_run"] = "true"
 
         body = self._client.get(f"/series/{series_id}/export", params=params)
         suffix = "-compact" if coalesce else ""
@@ -208,6 +223,17 @@ class Exports:
             for e in body.get("rate_limited", [])
         ]
         events_charged = int(body.get("events_charged", 0))
+
+        if dry_run:
+            return SeriesDownloadResult(
+                data_dir=data_dir,
+                ready=[e["market_id"] for e in body.get("ready", [])],
+                pending=pending,
+                failed=failed,
+                rate_limited=rate_limited,
+                events_charged=events_charged,
+            )
+
         targets = [(e["market_id"], e["url"]) for e in body.get("ready", [])]
 
         with make_reporter(enabled=progress, n_markets=len(targets)) as reporter:
@@ -413,10 +439,12 @@ class AsyncExports:
         progress: bool = True,
         coalesce: bool = True,
         concurrency: int = 1,
+        dry_run: bool = False,
     ) -> SeriesDownloadResult:
         """Async equivalent of :meth:`Exports.download_series`."""
         data_dir = Path(data_dir)
-        data_dir.mkdir(parents=True, exist_ok=True)
+        if not dry_run:
+            data_dir.mkdir(parents=True, exist_ok=True)
 
         params: dict[str, Any] = {}
         if after is not None:
@@ -425,6 +453,8 @@ class AsyncExports:
             params["before"] = _coerce_timestamp(before)
         if coalesce:
             params["coalesce"] = "true"
+        if dry_run:
+            params["dry_run"] = "true"
 
         body = await self._client.get(f"/series/{series_id}/export", params=params)
         suffix = "-compact" if coalesce else ""
@@ -435,6 +465,17 @@ class AsyncExports:
             for e in body.get("rate_limited", [])
         ]
         events_charged = int(body.get("events_charged", 0))
+
+        if dry_run:
+            return SeriesDownloadResult(
+                data_dir=data_dir,
+                ready=[e["market_id"] for e in body.get("ready", [])],
+                pending=pending,
+                failed=failed,
+                rate_limited=rate_limited,
+                events_charged=events_charged,
+            )
+
         targets = [(e["market_id"], e["url"]) for e in body.get("ready", [])]
 
         sem = asyncio.Semaphore(max(1, concurrency))

@@ -158,6 +158,14 @@ result = client.backtest(strategy, "btc-up-or-down-5m", data_dir=data,
 
 Exports are Parquet files (snapshots, deltas, trades, and reference prices for the underlying), built server-side. A single market comes via `client.exports.download(market_id)`, which raises `ExportNotReadyError` until its file is built; `download_series` lists such markets under `result.pending` and skips them.
 
+Downloads count toward your daily event budget. To see the cost of a window before spending it, pass `dry_run=True`: the same result comes back with `events_charged` as the price quote and `ready` naming the markets a real call would download, but nothing is downloaded and nothing is billed.
+
+```python
+quote = client.exports.download_series(
+    "btc-up-or-down-5m", after="2026-03-01", before="2026-03-08", dry_run=True)
+print(quote.events_charged)  # cost of the real call, narrow the window if too high
+```
+
 ## Results
 
 ```python
