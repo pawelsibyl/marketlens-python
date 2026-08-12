@@ -141,3 +141,54 @@ class TestTimeoutRetryPolicy:
         async with AsyncMarketLens(api_key="mk_test_key", base_url=BASE_URL) as ac:
             assert await ac.markets.list().to_list() == []
         assert route.call_count == 2
+
+
+class TestStreamingDownloadRetry:
+    """The streaming (progress-reporting) download path must see the 429
+    error code before deciding to retry: budget walls are non-retryable and
+    their Retry-After can be a month."""
+
+    class _Reporter:
+        def download_started(self, *a): pass
+        def download_progress(self, *a): pass
+        def download_finished(self, *a): pass
+
+    def test_streamed_budget_429_raises_immediately(self, mock_api, client, tmp_path):
+        route = mock_api.get("/reference/trades/export").mock(
+            return_value=httpx.Response(
+                429,
+                json={"error": {
+                    "code": "DAILY_BUDGET_EXCEEDED",
+                    "message": "Daily data row budget exhausted",
+                    "status": 429,
+                }},
+                # If the code were invisible (the pre-1.7.1 bug), the loop
+                # would honor this and the test would hang for a day.
+                headers={"Retry-After": "86400"},
+            )
+        )
+        with pytest.raises(DailyBudgetExceededError):
+            client._http.download(
+                "/reference/trades/export", tmp_path / "x.parquet",
+                reporter=self._Reporter(),
+            )
+        assert route.call_count == 1  # never retried
+
+    def test_streamed_plain_429_still_retries(self, mock_api, client, tmp_path, monkeypatch):
+        import marketlens._base as base
+        sleeps: list[float] = []
+        monkeypatch.setattr(base.time, "sleep", sleeps.append)
+        route = mock_api.get("/reference/trades/export").mock(
+            return_value=httpx.Response(
+                429,
+                json={"error": {"code": "RATE_LIMITED", "message": "slow down", "status": 429}},
+                headers={"Retry-After": "7"},
+            )
+        )
+        with pytest.raises(RateLimitError):
+            client._http.download(
+                "/reference/trades/export", tmp_path / "x.parquet",
+                reporter=self._Reporter(),
+            )
+        assert route.call_count == 1 + client._http.max_retries
+        assert sleeps and all(s >= 7 for s in sleeps)  # Retry-After honored

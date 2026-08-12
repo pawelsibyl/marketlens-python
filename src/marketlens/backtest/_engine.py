@@ -444,7 +444,14 @@ class _EngineCore:
         if data_dir is None:
             return
         path = Path(data_dir)
-        if path.exists() and any(path.glob("history-*.parquet")):
+        # A ".incomplete" marker means an earlier download was cut short by
+        # the row allowance: retry it (already-unlocked files re-download
+        # free) rather than trusting a partial directory.
+        if (
+            path.exists()
+            and any(path.glob("history-*.parquet"))
+            and not (path / ".incomplete").exists()
+        ):
             return
         concurrency = max(1, min(self._config.download_concurrency, os.cpu_count() or 1))
         client._ensure_exports_downloaded(

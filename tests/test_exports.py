@@ -627,3 +627,58 @@ class TestAsyncExports:
         assert sorted(result.ready) == sorted(ready)
         for mid in ready:
             assert (tmp_path / f"history-{mid}-compact.parquet").exists()
+
+
+class TestIncompleteBacktestDownload:
+    """The backtest autodownload must refuse a partial market set instead of
+    silently backtesting whatever the row allowance let through."""
+
+    def _result(self, limited):
+        from types import SimpleNamespace
+        return SimpleNamespace(rate_limited=limited)
+
+    def test_rate_limited_series_raises_and_marks_dir(self, tmp_path):
+        from marketlens import IncompleteExportError
+        from marketlens._client import _check_series_complete
+        from marketlens.resources.exports import SeriesRateLimited
+
+        limited = [
+            SeriesRateLimited(market_id="m-1", events=500, rows=400),
+            SeriesRateLimited(market_id="m-2", events=300, rows=300),
+        ]
+        with pytest.raises(IncompleteExportError) as exc_info:
+            _check_series_complete(self._result(limited), "btc-5m", str(tmp_path))
+        assert exc_info.value.missing == ["m-1", "m-2"]
+        assert exc_info.value.rows_needed == 700
+        marker = tmp_path / ".incomplete"
+        assert marker.read_text().splitlines() == ["m-1", "m-2"]
+
+    def test_complete_series_clears_the_marker(self, tmp_path):
+        from marketlens._client import _check_series_complete
+
+        (tmp_path / ".incomplete").write_text("m-1\n")
+        _check_series_complete(self._result([]), "btc-5m", str(tmp_path))
+        assert not (tmp_path / ".incomplete").exists()
+
+    def test_engine_retries_download_for_marked_dir(self, tmp_path):
+        from types import SimpleNamespace
+        from marketlens.backtest import BacktestConfig, BacktestEngine, Strategy
+
+        class _S(Strategy):
+            pass
+
+        calls: list = []
+        client = SimpleNamespace(
+            _ensure_exports_downloaded=lambda *a, **k: calls.append((a, k)),
+        )
+        engine = BacktestEngine(_S(), BacktestConfig(progress=False))
+        (tmp_path / "history-m1.parquet").write_bytes(b"x")
+
+        # Complete-looking dir: short-circuit, no download.
+        engine._maybe_autodownload(client, "btc-5m", after=0, before=1, data_dir=str(tmp_path))
+        assert calls == []
+
+        # Same dir marked incomplete: the download is retried.
+        (tmp_path / ".incomplete").write_text("m-2\n")
+        engine._maybe_autodownload(client, "btc-5m", after=0, before=1, data_dir=str(tmp_path))
+        assert len(calls) == 1

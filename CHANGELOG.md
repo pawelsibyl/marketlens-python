@@ -2,6 +2,11 @@
 
 All notable changes to the `marketlens` Python SDK, version by version.
 
+## [1.7.1] 2026-08-12
+
+* Streaming downloads no longer sleep on non-retryable 429s. The progress-reporting download path checked retryability before reading the streamed error body, so the budget-wall codes were invisible and every 429 was retried, honoring `Retry-After` with a blocking sleep. A budget wall hit mid `download_series` now raises its typed exception immediately, like every other request path.
+* Backtests no longer run silently on a partial market set. When a series download cannot deliver every market in the window because the remaining data-row allowance does not cover the missing files, the backtest autodownload now raises `marketlens.IncompleteExportError` (naming the missing markets and the rows needed) instead of backtesting whatever arrived and reporting plausible but wrong results. The `data_dir` is marked `.incomplete`, so rerunning after a top-up or reset retries the download; already-fetched markets are unlocked and re-download free. Directories left partial by 1.7.0 predate the marker: delete them or rerun the download once.
+
 ## [1.7.0] 2026-08-12
 
 * Support for the new two-meter pricing model. The API now bills data rows (deduplicated for exports: a file you already unlocked charges zero rows on every later download) and request units (cost-weighted requests per day), and the SDK maps the two new 429 codes to typed exceptions: `ROW_LIMIT_EXCEEDED` raises `marketlens.RowLimitExceededError` (paid monthly row allowance, resets on the first of the month UTC, archive packs top it up immediately) and `UNIT_LIMIT_EXCEEDED` raises `marketlens.RequestUnitsExceededError` (daily unit budget, resets at midnight UTC). Neither is auto-retried, matching the existing `DailyBudgetExceededError` behavior, since these budgets reset at wall-clock boundaries. Rate-limit responses carry `X-Rows-*` and `X-Units-*` headers; the `X-EventBudget-*` trio remains as an alias for this minor version.

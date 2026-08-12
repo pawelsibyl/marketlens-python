@@ -89,6 +89,24 @@ class ExportNotReadyError(APIError):
         self.last_error = last_error
 
 
+class IncompleteExportError(MarketLensError):
+    """A series export could not deliver every market in the window because
+    the remaining data-row balance did not cover the missing files.
+
+    Raised by the backtest autodownload path instead of silently running on
+    a partial market set (which would produce plausible but wrong results).
+    ``missing`` lists the market ids the server rate limited; ``rows_needed``
+    is the unlock cost of those files. Narrow the window, wait for the
+    allowance reset, or add an archive pack, then rerun with the same
+    ``data_dir``: markets already downloaded are unlocked and free.
+    """
+
+    def __init__(self, message: str, missing: list[str], rows_needed: int) -> None:
+        self.missing = missing
+        self.rows_needed = rows_needed
+        super().__init__(message)
+
+
 class ConnectionError(MarketLensError):
     """Network connection failure."""
 

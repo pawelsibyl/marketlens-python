@@ -292,6 +292,14 @@ class SyncHTTPClient:
         for attempt in range(1 + self.max_retries):
             try:
                 with self._client.stream("GET", path, params=prepared, timeout=DOWNLOAD_TIMEOUT) as response:
+                    if response.status_code >= 400:
+                        # Streaming responses don't auto-buffer. Read the
+                        # body BEFORE the retry check: _should_retry needs
+                        # the 429 error code (unread, every 429 looked
+                        # retryable and the loop slept the full Retry-After
+                        # of a budget wall), and _raise_for_error needs the
+                        # JSON error.
+                        response.read()
                     if _should_retry(response) and attempt < self.max_retries:
                         delay = 2**attempt
                         if response.status_code == 429:
@@ -300,10 +308,6 @@ class SyncHTTPClient:
                                 delay = max(delay, int(retry_after))
                         time.sleep(delay)
                         continue
-                    if response.status_code >= 400:
-                        # Streaming responses don't auto-buffer — read the
-                        # body so _raise_for_error can parse the JSON error.
-                        response.read()
                     _raise_for_error(response)
                     # Content-Length is the compressed size when the response
                     # is gzip/br encoded, but ``iter_bytes`` yields decompressed
@@ -505,6 +509,12 @@ class AsyncHTTPClient:
         for attempt in range(1 + self.max_retries):
             try:
                 async with self._client.stream("GET", path, params=prepared, timeout=DOWNLOAD_TIMEOUT) as response:
+                    if response.status_code >= 400:
+                        # Read BEFORE the retry check: _should_retry needs
+                        # the 429 error code (unread, every 429 looked
+                        # retryable and the loop slept the full Retry-After
+                        # of a budget wall).
+                        await response.aread()
                     if _should_retry(response) and attempt < self.max_retries:
                         delay = 2**attempt
                         if response.status_code == 429:
@@ -513,8 +523,6 @@ class AsyncHTTPClient:
                                 delay = max(delay, int(retry_after))
                         await asyncio.sleep(delay)
                         continue
-                    if response.status_code >= 400:
-                        await response.aread()
                     _raise_for_error(response)
                     encoded = bool(response.headers.get("Content-Encoding"))
                     total_raw = response.headers.get("Content-Length")
