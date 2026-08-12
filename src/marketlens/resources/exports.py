@@ -35,6 +35,9 @@ class SeriesFailed:
 class SeriesRateLimited:
     market_id: str
     events: int
+    # Rows the row meter would charge to unlock this market (0 when the file
+    # is already unlocked). Falls back to ``events`` against older servers.
+    rows: int = 0
 
 
 @dataclass(frozen=True)
@@ -44,9 +47,14 @@ class SeriesDownloadResult:
     Implements ``os.PathLike`` so callers can pass the result directly anywhere
     a directory is expected (e.g. ``client.backtest(..., data_dir=result)``).
 
-    For a ``dry_run=True`` call, ``events_charged`` is the cost a real call
-    would bill right now and ``ready`` names the markets it would download;
-    no files were written and nothing was billed.
+    ``rows_charged`` is what the data-row meter charged: files this account
+    already unlocked charge zero rows on repeat downloads. ``events_charged``
+    is the legacy alias (full rows of every ready file) and is kept for one
+    minor version.
+
+    For a ``dry_run=True`` call, ``rows_charged`` is the exact cost a real
+    call would bill right now and ``ready`` names the markets it would
+    download; no files were written, nothing was billed or unlocked.
     """
     data_dir: Path
     ready: list[str] = field(default_factory=list)
@@ -54,6 +62,7 @@ class SeriesDownloadResult:
     failed: list[SeriesFailed] = field(default_factory=list)
     rate_limited: list[SeriesRateLimited] = field(default_factory=list)
     events_charged: int = 0
+    rows_charged: int = 0
 
     def __fspath__(self) -> str:
         return str(self.data_dir)
@@ -183,19 +192,22 @@ class Exports:
             coalesce: See :meth:`download`. Default True.
             concurrency: Number of concurrent per-market downloads. Default 1.
             dry_run: When True, fetch the manifest only: nothing is
-                downloaded, nothing is billed, and ``events_charged`` on the
-                result is the cost an identical call without ``dry_run``
-                would bill right now. Use it to check the price of a window
-                before spending budget on it.
+                downloaded, billed, or unlocked, and ``rows_charged`` on the
+                result is the exact cost an identical call without
+                ``dry_run`` would bill right now (files this account already
+                unlocked count as zero). Use it to check the price of a
+                window before spending rows on it.
 
         Returns:
             ``SeriesDownloadResult`` with ``data_dir``, ``ready``, ``pending``,
-            ``failed``, ``rate_limited``, and ``events_charged``.
-            ``rate_limited`` lists markets that were skipped because including
-            them would have exceeded the caller's daily event budget; retry
-            after the budget resets or with a narrower ``after``/``before``
-            window. The result is ``os.PathLike`` (its ``__fspath__`` returns
-            the data directory), so it can be passed directly to
+            ``failed``, ``rate_limited``, ``rows_charged``, and the legacy
+            ``events_charged`` alias.
+            ``rate_limited`` lists markets that were skipped because unlocking
+            them would have exceeded the caller's remaining row balance; retry
+            after the balance resets, after an archive pack top-up, or with a
+            narrower ``after``/``before`` window. The result is
+            ``os.PathLike`` (its ``__fspath__`` returns the data directory),
+            so it can be passed directly to
             ``client.backtest(..., data_dir=result)``. With ``dry_run=True``
             the ``ready`` list names the markets a real call would download,
             but no files exist yet.
@@ -219,10 +231,15 @@ class Exports:
         pending = [SeriesPending(e["market_id"], e["status"]) for e in body.get("pending", [])]
         failed = [SeriesFailed(e["market_id"], e["error"]) for e in body.get("failed", [])]
         rate_limited = [
-            SeriesRateLimited(e["market_id"], int(e.get("events", 0)))
+            SeriesRateLimited(
+                e["market_id"],
+                int(e.get("events", 0)),
+                rows=int(e.get("rows", e.get("events", 0))),
+            )
             for e in body.get("rate_limited", [])
         ]
         events_charged = int(body.get("events_charged", 0))
+        rows_charged = int(body.get("rows_charged", events_charged))
 
         if dry_run:
             return SeriesDownloadResult(
@@ -232,6 +249,7 @@ class Exports:
                 failed=failed,
                 rate_limited=rate_limited,
                 events_charged=events_charged,
+                rows_charged=rows_charged,
             )
 
         targets = [(e["market_id"], e["url"]) for e in body.get("ready", [])]
@@ -282,6 +300,7 @@ class Exports:
             failed=failed,
             rate_limited=rate_limited,
             events_charged=events_charged,
+            rows_charged=rows_charged,
         )
 
     def download_market_bars(
@@ -461,10 +480,15 @@ class AsyncExports:
         pending = [SeriesPending(e["market_id"], e["status"]) for e in body.get("pending", [])]
         failed = [SeriesFailed(e["market_id"], e["error"]) for e in body.get("failed", [])]
         rate_limited = [
-            SeriesRateLimited(e["market_id"], int(e.get("events", 0)))
+            SeriesRateLimited(
+                e["market_id"],
+                int(e.get("events", 0)),
+                rows=int(e.get("rows", e.get("events", 0))),
+            )
             for e in body.get("rate_limited", [])
         ]
         events_charged = int(body.get("events_charged", 0))
+        rows_charged = int(body.get("rows_charged", events_charged))
 
         if dry_run:
             return SeriesDownloadResult(
@@ -474,6 +498,7 @@ class AsyncExports:
                 failed=failed,
                 rate_limited=rate_limited,
                 events_charged=events_charged,
+                rows_charged=rows_charged,
             )
 
         targets = [(e["market_id"], e["url"]) for e in body.get("ready", [])]
@@ -527,6 +552,7 @@ class AsyncExports:
             failed=failed,
             rate_limited=rate_limited,
             events_charged=events_charged,
+            rows_charged=rows_charged,
         )
 
     async def _ensure_reference(

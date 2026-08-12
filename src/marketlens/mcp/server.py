@@ -65,9 +65,10 @@ Coverage: history runs from 2026-03-01 up to roughly 3 hours ago; the most
 recent few hours are not built yet, so keep windows within that range.
 
 Budget: get_trades, get_candles, get_orderbook_metrics and get_reference_candles
-bill one event per returned row, so pass a tight after/before window and a small
-limit. Errors come back as {"error", "message"} (plus "hint" when useful); read
-the message and adjust rather than retrying unchanged.
+bill one data row per returned row against the account's row balance, so pass a
+tight after/before window and a small limit. Errors come back as {"error",
+"message"} (plus "hint" when useful); read the message and adjust rather than
+retrying unchanged.
 
 Work iteratively and data-first: explore with the data tools to form a
 hypothesis, then read strategy_reference and validate the strategy on a SHORT
@@ -309,7 +310,8 @@ def build_server() -> FastMCP:
         """List executed trades for a market UUID.
 
         `after`/`before` (epoch ms or ISO 8601) are required. Each returned
-        trade bills one event against the daily budget, so keep the window tight.
+        trade bills one data row against the row balance, so keep the window
+        tight.
         """
         params: dict[str, Any] = {
             "after": after, "before": before, "order": order, "take": _clamp(limit),
@@ -333,8 +335,8 @@ def build_server() -> FastMCP:
     ) -> list[dict] | dict:
         """OHLCV candles for a market UUID.
 
-        `after`/`before` (epoch ms or ISO 8601) are required. Bills one event
-        per returned candle.
+        `after`/`before` (epoch ms or ISO 8601) are required. Bills one data
+        row per returned candle.
         """
         rows = _get_client().markets.candles(
             market_id, after=after, before=before,
@@ -354,8 +356,8 @@ def build_server() -> FastMCP:
     ) -> list[dict] | dict:
         """Binance spot OHLCV for an underlying symbol (BTC, ETH, SOL, ...).
 
-        `after`/`before` (epoch ms or ISO 8601) are required. Bills one event
-        per returned candle.
+        `after`/`before` (epoch ms or ISO 8601) are required. Bills one data
+        row per returned candle.
         """
         rows = _get_client().reference.candles(
             symbol, after=after, before=before,

@@ -40,9 +40,32 @@ class RateLimitError(APIError):
 
 
 class DailyBudgetExceededError(APIError):
-    """429 Daily event budget exhausted. Resets at midnight UTC.
+    """429 Daily data budget exhausted (free tier). Resets at midnight UTC.
 
     Not auto-retried by the SDK (unlike :class:`RateLimitError`).
+    """
+
+    def __init__(self, status_code: int, code: str, message: str, retry_after: int | None = None) -> None:
+        super().__init__(status_code, code, message)
+        self.retry_after = retry_after
+
+
+class RowLimitExceededError(APIError):
+    """429 Monthly data row allowance exhausted (paid tiers).
+
+    Resets on the first of the month (UTC); archive packs top the balance up
+    immediately. Not auto-retried by the SDK.
+    """
+
+    def __init__(self, status_code: int, code: str, message: str, retry_after: int | None = None) -> None:
+        super().__init__(status_code, code, message)
+        self.retry_after = retry_after
+
+
+class RequestUnitsExceededError(APIError):
+    """429 Daily request unit budget exhausted. Resets at midnight UTC.
+
+    Not auto-retried by the SDK.
     """
 
     def __init__(self, status_code: int, code: str, message: str, retry_after: int | None = None) -> None:
@@ -95,5 +118,16 @@ _CODE_TO_EXCEPTION: dict[str, type[APIError]] = {
     "CURSOR_EXPIRED": InvalidParameterError,
     "RATE_LIMITED": RateLimitError,
     "DAILY_BUDGET_EXCEEDED": DailyBudgetExceededError,
+    "ROW_LIMIT_EXCEEDED": RowLimitExceededError,
+    "UNIT_LIMIT_EXCEEDED": RequestUnitsExceededError,
     "EXPORT_NOT_READY": ExportNotReadyError,
 }
+
+# 429 codes the retry loop must never retry: these budgets reset at a fixed
+# wall-clock boundary (midnight UTC or the first of the month), so retrying
+# in-process only burns attempts.
+NON_RETRYABLE_429_CODES = frozenset({
+    "DAILY_BUDGET_EXCEEDED",
+    "ROW_LIMIT_EXCEEDED",
+    "UNIT_LIMIT_EXCEEDED",
+})

@@ -158,12 +158,12 @@ result = client.backtest(strategy, "btc-up-or-down-5m", data_dir=data,
 
 Exports are Parquet files (snapshots, deltas, trades, and reference prices for the underlying), built server-side. A single market comes via `client.exports.download(market_id)`, which raises `ExportNotReadyError` until its file is built; `download_series` lists such markets under `result.pending` and skips them.
 
-Downloads count toward your daily event budget. To see the cost of a window before spending it, pass `dry_run=True`: the same result comes back with `events_charged` as the price quote and `ready` naming the markets a real call would download, but nothing is downloaded and nothing is billed.
+Downloads charge data rows against your plan's row balance the first time you take each file; a file you already unlocked charges zero rows on every later download, so polling a series or re-downloading is free. To see the cost of a window before spending it, pass `dry_run=True`: the same result comes back with `rows_charged` as an exact price quote (already accounting for files you own) and `ready` naming the markets a real call would download, but nothing is downloaded, billed, or unlocked.
 
 ```python
 quote = client.exports.download_series(
     "btc-up-or-down-5m", after="2026-03-01", before="2026-03-08", dry_run=True)
-print(quote.events_charged)  # cost of the real call, narrow the window if too high
+print(quote.rows_charged)  # cost of the real call, narrow the window if too high
 ```
 
 ## Results
@@ -307,7 +307,7 @@ pip install 'marketlens[mcp]'
 | `strategy_reference` `run_backtest` | Author a `Strategy` and run it through the engine |
 | `compare_backtests` `open_backtest` | Score strategies side by side, inspect a saved run |
 
-Tools that bill events (`get_trades`, `get_candles`, `get_orderbook_metrics`, `get_reference_candles`) require both `after` and `before`. `run_backtest` executes agent-authored strategy code in a subprocess on your machine; disable it with `MARKETLENS_MCP_DISABLE_BACKTEST=1`. See the [MCP docs](https://marketlens.trade/docs/mcp).
+Tools that bill data rows (`get_trades`, `get_candles`, `get_orderbook_metrics`, `get_reference_candles`) require both `after` and `before`. `run_backtest` executes agent-authored strategy code in a subprocess on your machine; disable it with `MARKETLENS_MCP_DISABLE_BACKTEST=1`. See the [MCP docs](https://marketlens.trade/docs/mcp).
 
 ## Reference
 

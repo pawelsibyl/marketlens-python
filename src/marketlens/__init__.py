@@ -13,6 +13,8 @@ from marketlens.exceptions import (
     MarketLensError,
     NotFoundError,
     RateLimitError,
+    RequestUnitsExceededError,
+    RowLimitExceededError,
     TimeoutError,
 )
 from marketlens.resources.exports import (
@@ -98,6 +100,8 @@ __all__ = [
     "InvalidParameterError",
     "RateLimitError",
     "DailyBudgetExceededError",
+    "RowLimitExceededError",
+    "RequestUnitsExceededError",
     "ExportNotReadyError",
     "ConnectionError",
     "TimeoutError",

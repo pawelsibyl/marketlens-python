@@ -296,9 +296,31 @@ class TestSeriesDownload:
         assert len(result.pending) == 1 and result.pending[0].market_id == "m3"
         assert len(result.failed) == 1 and result.failed[0].market_id == "m4"
         assert result.events_charged == 12345
+        # Old server payload with no rows_charged: falls back to the alias.
+        assert result.rows_charged == 12345
         assert (tmp_path / "history-m1-compact.parquet").read_bytes() == b"PAR1-m1"
         assert (tmp_path / "history-m2-compact.parquet").read_bytes() == b"PAR1-m2"
         assert not list(tmp_path.glob("*.part"))
+
+    def test_parses_rows_charged_and_rate_limited_rows(self, mock_api, client, tmp_path):
+        manifest = self._manifest(ready_ids=["m1"], events=100)
+        manifest["rows_charged"] = 40
+        manifest["rate_limited"] = [{"market_id": "m9", "events": 70, "rows": 60}]
+        mock_api.get("/series/btc-daily/export").mock(
+            return_value=httpx.Response(200, json=manifest)
+        )
+        mock_api.get(f"{BUCKET_BASE}/history/m1-compact.parquet").mock(
+            return_value=httpx.Response(200, content=b"PAR1-m1")
+        )
+        _series_404(mock_api, "btc-daily")
+
+        result = client.exports.download_series(
+            "btc-daily", data_dir=str(tmp_path), progress=False,
+        )
+        assert result.rows_charged == 40
+        assert result.events_charged == 100
+        rl = result.rate_limited[0]
+        assert (rl.market_id, rl.events, rl.rows) == ("m9", 70, 60)
 
     def test_result_is_pathlike(self, mock_api, client, tmp_path):
         mock_api.get("/series/btc-daily/export").mock(

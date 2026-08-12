@@ -3,7 +3,7 @@
   "name": "io.github.marketlenstrade/marketlens",
   "title": "Marketlens",
   "description": "Polymarket prediction market data for agents: market search, tick-level historical order books, trades, candles, and an execution-realistic backtest engine.",
-  "version": "1.6.2",
+  "version": "1.7.0",
   "websiteUrl": "https://marketlens.trade/docs/mcp",
   "repository": {
     "url": "https://github.com/marketlenstrade/marketlens-python",
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "marketlens",
-      "version": "1.6.2",
+      "version": "1.7.0",
       "transport": {
         "type": "stdio"
       },

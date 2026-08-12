@@ -5,9 +5,12 @@ from marketlens import (
     AsyncMarketLens,
     MarketLens,
     AuthenticationError,
+    DailyBudgetExceededError,
     NotFoundError,
     InvalidParameterError,
     RateLimitError,
+    RequestUnitsExceededError,
+    RowLimitExceededError,
 )
 from marketlens import TimeoutError as MarketlensTimeoutError
 
@@ -57,6 +60,49 @@ class TestErrorMapping:
 
 
 _EMPTY_PAGE = {"data": [], "meta": {"cursor": None, "has_more": False}}
+
+
+def _budget_429(code: str) -> httpx.Response:
+    return httpx.Response(
+        429,
+        json={"error": {"code": code, "message": "budget exhausted", "status": 429}},
+        headers={"Retry-After": "600"},
+    )
+
+
+class TestBudget429Codes:
+    """The three budget codes map to their own exceptions and are never
+    retried: their budgets reset at wall-clock boundaries, so an in-process
+    retry can only burn attempts."""
+
+    @pytest.mark.parametrize("code,exc_cls", [
+        ("DAILY_BUDGET_EXCEEDED", DailyBudgetExceededError),
+        ("ROW_LIMIT_EXCEEDED", RowLimitExceededError),
+        ("UNIT_LIMIT_EXCEEDED", RequestUnitsExceededError),
+    ])
+    def test_code_maps_and_never_retries(self, mock_api, client, code, exc_cls):
+        route = mock_api.get("/markets").mock(return_value=_budget_429(code))
+        with pytest.raises(exc_cls) as exc_info:
+            client.markets.list().to_list()
+        assert exc_info.value.retry_after == 600
+        assert exc_info.value.code == code
+        assert route.call_count == 1  # no retry
+
+    def test_plain_429_still_retries(self, mock_api, client):
+        route = mock_api.get("/markets")
+        route.side_effect = [
+            _budget_429("RATE_LIMITED"),
+            httpx.Response(200, json=_EMPTY_PAGE),
+        ]
+        # Patch out the backoff sleep so the retry is instant.
+        import marketlens._base as base
+        orig_sleep = base.time.sleep
+        base.time.sleep = lambda *_: None
+        try:
+            assert client.markets.list().to_list() == []
+        finally:
+            base.time.sleep = orig_sleep
+        assert route.call_count == 2
 
 
 class TestTimeoutRetryPolicy:

@@ -24,7 +24,10 @@ from marketlens.exceptions import (
     ConnectionError,
     DailyBudgetExceededError,
     ExportNotReadyError,
+    NON_RETRYABLE_429_CODES,
     RateLimitError,
+    RequestUnitsExceededError,
+    RowLimitExceededError,
     TimeoutError,
     _CODE_TO_EXCEPTION,
     _STATUS_TO_EXCEPTION,
@@ -142,7 +145,12 @@ def _raise_for_error(response: httpx.Response) -> None:
     # Pick exception class: prefer code-based mapping, fall back to status
     exc_cls = _CODE_TO_EXCEPTION.get(code) or _STATUS_TO_EXCEPTION.get(response.status_code, APIError)
 
-    if exc_cls is RateLimitError or exc_cls is DailyBudgetExceededError:
+    if exc_cls in (
+        RateLimitError,
+        DailyBudgetExceededError,
+        RowLimitExceededError,
+        RequestUnitsExceededError,
+    ):
         retry_after_raw = response.headers.get("Retry-After")
         retry_after = int(retry_after_raw) if retry_after_raw else None
         raise exc_cls(response.status_code, code, message, retry_after=retry_after)
@@ -168,7 +176,7 @@ def _should_retry(response: httpx.Response) -> bool:
     if response.status_code == 429:
         try:
             body = orjson.loads(response.content)
-            if body.get("error", {}).get("code") == "DAILY_BUDGET_EXCEEDED":
+            if body.get("error", {}).get("code") in NON_RETRYABLE_429_CODES:
                 return False
         except Exception:
             pass
