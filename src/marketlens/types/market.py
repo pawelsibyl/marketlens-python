@@ -46,6 +46,10 @@ class Market(BaseModel):
     strike_direction: str | None = None
     subtype: str | None = None
     underlying: str | None = None
+    # "streamed" = full snapshot + delta chain; "polled" = periodic REST
+    # snapshots only (no deltas); None = collected before tiers existed
+    # (streamed fidelity).
+    collection_tier: str | None = None
     created_at: int
     updated_at: int
 

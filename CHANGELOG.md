@@ -2,6 +2,10 @@
 
 All notable changes to the `marketlens` Python SDK, version by version.
 
+## [1.7.2] 2026-08-15
+
+* `Market` gains `collection_tier`: `"streamed"` markets carry the full snapshot and delta chain, `"polled"` markets carry periodic order book snapshots without deltas (the new low-frequency collection tier for long-dated markets), and `None` means the market predates tiers and was collected streamed.
+
 ## [1.7.1] 2026-08-12
 
 * Streaming downloads no longer sleep on non-retryable 429s. The progress-reporting download path checked retryability before reading the streamed error body, so the budget-wall codes were invisible and every 429 was retried, honoring `Retry-After` with a blocking sleep. A budget wall hit mid `download_series` now raises its typed exception immediately, like every other request path.
