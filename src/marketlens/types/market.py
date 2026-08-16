@@ -50,6 +50,18 @@ class Market(BaseModel):
     # snapshots only (no deltas); None = collected before tiers existed
     # (streamed fidelity).
     collection_tier: str | None = None
+    # When the predicted real-world event happens (ms epoch), e.g. game
+    # kickoff. Sports/esports only; the platform populates it after listing.
+    game_start_time: int | None = None
+    # Platform bet-type slug for sports/esports markets ("moneyline",
+    # "spreads", "totals", "tennis_match_totals", ... 70+ values).
+    sports_market_type: str | None = None
+    # Spread or total line for sports bets (e.g. -6.5).
+    line: float | None = None
+    # Part of a negative-risk group (mutually exclusive outcomes of one event).
+    neg_risk: bool | None = None
+    # Short label of this market within its event, e.g. the candidate name.
+    group_item_title: str | None = None
     created_at: int
     updated_at: int
 

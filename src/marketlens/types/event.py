@@ -15,6 +15,8 @@ class Event(BaseModel):
     series_title: str | None = None
     series_recurrence: str | None = None
     market_count: int
+    # Platform tag objects (id, label, slug) as last seen on the platform.
+    tags: list[dict] | None = None
     start_date: int | None = None
     end_date: int | None = None
     created_at: int | None = None

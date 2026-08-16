@@ -2,9 +2,11 @@
 
 All notable changes to the `marketlens` Python SDK, version by version.
 
-## [1.7.2] 2026-08-15
+## [1.7.2] 2026-08-16
 
 * `Market` gains `collection_tier`: `"streamed"` markets carry the full snapshot and delta chain, `"polled"` markets carry periodic order book snapshots without deltas (the new low-frequency collection tier for long-dated markets), and `None` means the market predates tiers and was collected streamed.
+* `Market` gains five structural fields promoted from the platform payload: `game_start_time` (when the predicted real-world event happens, ms epoch; sports and esports), `sports_market_type` (platform bet-type slug like `"moneyline"`, `"spreads"`, `"totals"`, `"tennis_match_totals"`, 70+ values), `line` (the spread or total line, e.g. `-6.5`), `neg_risk` (part of a negative-risk group of mutually exclusive outcomes), and `group_item_title` (the market's short label within its event, e.g. the candidate name).
+* `Event` gains `tags`: the platform tag objects (id, label, slug) as last seen on the platform.
 
 ## [1.7.1] 2026-08-12
 
