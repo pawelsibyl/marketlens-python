@@ -35,6 +35,9 @@ except ImportError as exc:  # pragma: no cover - import guard
 
 
 # Total-item cap shared by the list tools; keeps any single call cheap.
+# The list tools send it as both ``take`` (client-side total cap) and
+# ``limit`` (server page size), so a small search fetches a small page
+# instead of a full default page it would throw most of away.
 _MAX_LIMIT = 200
 _DEFAULT_ARTIFACTS = "./marketlens-backtests"
 # A backtest slower than this (seconds) gets a "this was slow, iterate smaller"
@@ -199,7 +202,7 @@ def build_server() -> FastMCP:
         (prefix with - for descending, e.g. -created_at = newest first).
         Returns up to `limit` (max 200) rows.
         """
-        params: dict[str, Any] = {"take": _clamp(limit)}
+        params: dict[str, Any] = {"take": _clamp(limit), "limit": _clamp(limit)}
         for k, v in (
             ("q", q), ("status", status), ("category", category),
             ("series_id", series_id), ("event_id", event_id), ("platform", platform),
@@ -226,7 +229,7 @@ def build_server() -> FastMCP:
         limit: int = 20,
     ) -> list[dict] | dict:
         """Search events (groupings of related markets). q needs >= 3 chars."""
-        params: dict[str, Any] = {"take": _clamp(limit)}
+        params: dict[str, Any] = {"take": _clamp(limit), "limit": _clamp(limit)}
         for k, v in (
             ("q", q), ("category", category), ("series_id", series_id),
             ("platform", platform), ("sort", sort),
@@ -245,7 +248,7 @@ def build_server() -> FastMCP:
         limit: int = 20,
     ) -> list[dict] | dict:
         """List recurring series (e.g. btc-up-or-down-5m). recurrence: 5m, 1h, daily, ..."""
-        params: dict[str, Any] = {"take": _clamp(limit)}
+        params: dict[str, Any] = {"take": _clamp(limit), "limit": _clamp(limit)}
         for k, v in (
             ("category", category), ("platform", platform),
             ("recurrence", recurrence), ("sort", sort),
@@ -379,7 +382,7 @@ def build_server() -> FastMCP:
         underlying: BTC, ETH, ... Use get_surface with a row's series_id +
         event_id for the per-strike detail.
         """
-        params: dict[str, Any] = {"take": _clamp(limit)}
+        params: dict[str, Any] = {"take": _clamp(limit), "limit": _clamp(limit)}
         if underlying is not None:
             params["underlying"] = underlying
         if surface_type is not None:
